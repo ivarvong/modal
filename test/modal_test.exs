@@ -33,6 +33,7 @@ defmodule ModalTest do
 
     on_exit(fn ->
       try do
+        Modal.Client.ensure_grpc_supervisor!()
         {:ok, fresh} = Modal.Client.start_link(token_id: token_id, token_secret: token_secret)
         Modal.Sandbox.terminate(%{sandbox | client: fresh})
         GenServer.stop(fresh)
@@ -110,6 +111,32 @@ defmodule ModalTest do
 
       assert result.code == 0
       assert String.contains?(result.stdout, "12.0")
+    end
+  end
+
+  describe "filesystem" do
+    test "writes and reads a file", %{sandbox: sb} do
+      path = "/tmp/test_#{System.unique_integer([:positive])}.txt"
+      content = "written at #{DateTime.utc_now()}\n"
+
+      assert :ok = Modal.Sandbox.write_file(sb, path, content)
+      assert {:ok, ^content} = Modal.Sandbox.read_file(sb, path)
+    end
+
+    test "lists directory contents", %{sandbox: sb} do
+      path = "/tmp/lsdir_#{System.unique_integer([:positive])}"
+      :ok = Modal.Sandbox.mkdir(sb, path)
+
+      assert {:ok, files} = Modal.Sandbox.ls(sb, "/tmp")
+      assert is_list(files)
+      assert Path.basename(path) in files
+    end
+
+    test "creates and removes a directory", %{sandbox: sb} do
+      path = "/tmp/rmdir_#{System.unique_integer([:positive])}"
+      assert :ok = Modal.Sandbox.mkdir(sb, path)
+      assert {:ok, []} = Modal.Sandbox.ls(sb, path)
+      assert :ok = Modal.Sandbox.rm(sb, path, recursive: true)
     end
   end
 

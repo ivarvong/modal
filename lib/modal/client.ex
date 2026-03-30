@@ -158,21 +158,26 @@ defmodule Modal.Client do
 
     case apply(ModalStub, method, [state.channel, request, opts]) do
       {:ok, enum} ->
-        enum
-        |> Stream.flat_map(fn
-          {:ok, msg} -> [msg]
-          _ -> []
-        end)
-        |> Enum.each(fn msg ->
-          callback.({:data, msg})
-        end)
-
-        callback.(:done)
+        iterate_stream(enum, callback)
         {:ok, state}
 
       {:error, reason} ->
         {{:error, reason}, reconnect(state)}
     end
+  end
+
+  defp iterate_stream(enum, callback) do
+    _result =
+      enum
+      |> Stream.flat_map(fn
+        {:ok, msg} -> [msg]
+        _ -> []
+      end)
+      |> Enum.reduce_while(:ok, fn msg, _ ->
+        if callback.({:data, msg}) == :halt, do: {:halt, :halted}, else: {:cont, :ok}
+      end)
+
+    callback.(:done)
   end
 
   # ── Connection management ───────────────────────────────────────
@@ -205,7 +210,8 @@ defmodule Modal.Client do
     end
   end
 
-  defp ensure_grpc_supervisor! do
+  @doc false
+  def ensure_grpc_supervisor! do
     unless Process.whereis(GRPC.Client.Supervisor) do
       DynamicSupervisor.start_link(strategy: :one_for_one, name: GRPC.Client.Supervisor)
     end
