@@ -2,7 +2,7 @@ defmodule Modal.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/ivar/modal"
+  @source_url "https://github.com/ivarvong/modal"
 
   def project do
     [
@@ -48,7 +48,8 @@ defmodule Modal.MixProject do
   defp package do
     [
       licenses: ["MIT"],
-      links: %{"GitHub" => @source_url}
+      links: %{"GitHub" => @source_url},
+      files: ~w(lib mix.exs README.md LICENSE NOTICE .formatter.exs)
     ]
   end
 
