@@ -27,7 +27,6 @@ defmodule Modal do
     * `Modal.App` - app lookup/creation
     * `Modal.Image` - container image builds
     * `Modal.Sandbox` - sandbox lifecycle, exec, filesystem, logs, tunnels, snapshots
-    * `Modal.ContainerProcess` - a running command (implements `Enumerable` for stdout)
-    * `Modal.DataPlane` - low-level direct worker connection
+    * `Modal.ContainerProcess` - a running command with streaming stdout and stdin
   """
 end

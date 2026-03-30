@@ -50,21 +50,13 @@ defmodule Mix.Tasks.Modal.Demo do
     info("sandbox: #{sandbox.id} (boot: #{elapsed(t0)})")
 
     step("Cloning ivarvong/pyex")
-    dp_run!(sandbox, "git clone --depth=1 https://github.com/ivarvong/pyex.git /work/pyex")
+    run!(sandbox, "git clone --depth=1 https://github.com/ivarvong/pyex.git /work/pyex")
 
     step("Installing deps")
-    dp_run!(sandbox, "cd /work/pyex && mix deps.get 2>&1 | tail -5")
+    run!(sandbox, "cd /work/pyex && mix deps.get 2>&1 | tail -5")
 
-    step("Compiling (cold)")
-    dp_run!(sandbox, "cd /work/pyex && mix compile 2>&1 | tail -5", timeout: 600_000)
-
-    step("Running tests")
-
-    dp_run!(
-      sandbox,
-      "cd /work/pyex && mix test --exclude postgres --exclude external_http --exclude r2 2>&1 | tail -15",
-      timeout: 600_000
-    )
+    step("Compiling (cold) -- STREAMING output")
+    stream!(sandbox, "cd /work/pyex && mix compile 2>&1")
 
     step("Snapshotting filesystem")
     client = connect.()
@@ -93,28 +85,27 @@ defmodule Mix.Tasks.Modal.Demo do
     info("sandbox: #{sandbox2.id} (boot: #{elapsed(t0)})")
 
     step("Verifying snapshot")
-    dp_run!(sandbox2, "ls /work/pyex/mix.exs /work/pyex/deps/ && echo 'All present'")
+    run!(sandbox2, "ls /work/pyex/mix.exs /work/pyex/deps/ && echo 'All present'")
 
-    step("Running tests (from snapshot)")
+    step("Running tests -- STREAMING output")
 
-    dp_run!(
+    stream!(
       sandbox2,
-      "cd /work/pyex && mix test --exclude postgres --exclude external_http --exclude r2 2>&1 | tail -15",
-      timeout: 600_000
+      "cd /work/pyex && mix test --exclude postgres --exclude external_http --exclude r2 2>&1"
     )
 
     step("Reading a file")
-    dp_run!(sandbox2, "head -8 /work/pyex/mix.exs")
+    run!(sandbox2, "head -8 /work/pyex/mix.exs")
 
     step("Writing + reading a file")
-    dp_run!(sandbox2, "echo 'hello from elixir' > /tmp/test.txt && cat /tmp/test.txt")
+    run!(sandbox2, "echo 'hello from elixir' > /tmp/test.txt && cat /tmp/test.txt")
 
     client = connect.()
     Modal.Sandbox.terminate(%{sandbox2 | client: client})
     Mix.shell().info("\n\e[32m=== Done. ===\e[0m")
   end
 
-  defp dp_run!(%Modal.Sandbox{} = sandbox, cmd, opts \\ []) do
+  defp run!(%Modal.Sandbox{} = sandbox, cmd, opts \\ []) do
     t0 = now()
     info("$ #{cmd}")
 
@@ -128,6 +119,27 @@ defmodule Mix.Tasks.Modal.Demo do
 
     color = if (result.code || 0) == 0, do: "\e[32m", else: "\e[31m"
     info("#{color}exit: #{result.code || 0}\e[0m (#{elapsed(t0)})")
+  end
+
+  defp stream!(%Modal.Sandbox{} = sandbox, cmd) do
+    t0 = now()
+    info("$ #{cmd}")
+
+    proc = Modal.Sandbox.exec(sandbox, ["bash", "-c", cmd])
+
+    exit_task =
+      Task.async(fn ->
+        {:ok, code} = Modal.ContainerProcess.exit_code(proc)
+        code
+      end)
+
+    proc |> Enum.each(fn chunk -> IO.write("  " <> chunk) end)
+
+    code = Task.await(exit_task, :infinity)
+    Modal.ContainerProcess.close(proc)
+
+    color = if (code || 0) == 0, do: "\e[32m", else: "\e[31m"
+    info("#{color}exit: #{code || 0}\e[0m (#{elapsed(t0)})")
   end
 
   defp credentials! do

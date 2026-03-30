@@ -106,10 +106,9 @@ defmodule Modal.Client do
   end
 
   @impl true
-  def handle_info(msg, state) do
-    Logger.debug("[modal] ignoring message: #{inspect(msg, limit: 3)}")
-    {:noreply, state}
-  end
+  def handle_info({:gun_down, _, _, _, _}, state), do: {:noreply, state}
+  def handle_info({:gun_up, _, _}, state), do: {:noreply, state}
+  def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, %{channel: ch}) when not is_nil(ch), do: GRPC.Stub.disconnect(ch)
