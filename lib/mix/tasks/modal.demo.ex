@@ -1,4 +1,5 @@
 defmodule Mix.Tasks.Modal.Demo do
+  @moduledoc "Demonstrates a Ramp-style coding agent workflow using Modal Sandboxes."
   @shortdoc "Clone a repo, install deps, snapshot, restore, run tests"
   use Mix.Task
 

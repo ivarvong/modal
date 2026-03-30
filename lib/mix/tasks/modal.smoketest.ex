@@ -1,4 +1,5 @@
 defmodule Mix.Tasks.Modal.Smoketest do
+  @moduledoc "Creates a sandbox, runs a Python script, and prints the output."
   @shortdoc "Create a sandbox, run Python, print the result"
   use Mix.Task
 
