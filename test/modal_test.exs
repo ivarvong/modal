@@ -37,8 +37,8 @@ defmodule ModalTest do
         {:ok, fresh} = Modal.Client.start_link(token_id: token_id, token_secret: token_secret)
         Modal.Sandbox.terminate(%{sandbox | client: fresh})
         GenServer.stop(fresh)
-      rescue
-        _ -> :ok
+      catch
+        _, _ -> :ok
       end
     end)
 
