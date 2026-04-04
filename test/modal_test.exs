@@ -5,6 +5,9 @@ defmodule ModalTest do
   @moduletag timeout: 120_000
 
   setup_all do
+    Application.put_env(:modal, :client_impl, Modal.Client)
+    on_exit(fn -> Application.put_env(:modal, :client_impl, Modal.Client.Mock) end)
+
     token_id = System.get_env("MODAL_TOKEN_ID")
     token_secret = System.get_env("MODAL_TOKEN_SECRET")
 
@@ -17,7 +20,8 @@ defmodule ModalTest do
 
     {:ok, app_id} = Modal.App.lookup(client, "elixir-test")
 
-    {:ok, image_id} =
+    # get_or_create returns a 3-tuple: {:ok, image_id, :cached | :built}
+    {:ok, image_id, _status} =
       Modal.Image.get_or_create(client, ["FROM python:3.12-slim-bookworm"], app_id: app_id)
 
     sandbox =
@@ -29,14 +33,11 @@ defmodule ModalTest do
         idle_timeout: 120
       )
 
-    {:ok, _} = Modal.Sandbox.get_task_id(sandbox)
+    {:ok, _, sandbox} = Modal.Sandbox.get_task_id(sandbox)
 
     on_exit(fn ->
       try do
-        Modal.Client.ensure_grpc_supervisor!()
-        {:ok, fresh} = Modal.Client.start_link(token_id: token_id, token_secret: token_secret)
-        Modal.Sandbox.terminate(%{sandbox | client: fresh})
-        GenServer.stop(fresh)
+        Modal.Sandbox.terminate(sandbox)
       catch
         _, _ -> :ok
       end
@@ -65,7 +66,7 @@ defmodule ModalTest do
 
   describe "ContainerProcess" do
     test "await collects stdout and exit code", %{sandbox: sb} do
-      proc = Modal.Sandbox.exec(sb, ["echo", "hello modal"])
+      {:ok, proc} = Modal.Sandbox.exec(sb, ["echo", "hello modal"])
       assert {:ok, result} = Modal.ContainerProcess.await(proc)
       Modal.ContainerProcess.close(proc)
 
@@ -73,10 +74,10 @@ defmodule ModalTest do
       assert String.contains?(result.stdout, "hello modal")
     end
 
-    test "streams stdout via Enumerable", %{sandbox: sb} do
-      proc = Modal.Sandbox.exec(sb, ["bash", "-c", "for i in 1 2 3; do echo line$i; done"])
+    test "stream/1 yields stdout chunks", %{sandbox: sb} do
+      {:ok, proc} = Modal.Sandbox.exec(sb, ["bash", "-c", "for i in 1 2 3; do echo line$i; done"])
 
-      chunks = Enum.to_list(proc)
+      chunks = proc |> Modal.ContainerProcess.stream() |> Enum.to_list()
       {:ok, code} = Modal.ContainerProcess.exit_code(proc)
       Modal.ContainerProcess.close(proc)
 
@@ -87,7 +88,7 @@ defmodule ModalTest do
     end
 
     test "returns non-zero exit code", %{sandbox: sb} do
-      proc = Modal.Sandbox.exec(sb, ["bash", "-c", "exit 42"])
+      {:ok, proc} = Modal.Sandbox.exec(sb, ["bash", "-c", "exit 42"])
       {:ok, result} = Modal.ContainerProcess.await(proc)
       Modal.ContainerProcess.close(proc)
 
@@ -95,7 +96,7 @@ defmodule ModalTest do
     end
 
     test "writes to stdin", %{sandbox: sb} do
-      proc = Modal.Sandbox.exec(sb, ["cat"])
+      {:ok, proc} = Modal.Sandbox.exec(sb, ["cat"])
       :ok = Modal.ContainerProcess.write(proc, "from stdin\n", eof: true)
       {:ok, result} = Modal.ContainerProcess.await(proc)
       Modal.ContainerProcess.close(proc)
@@ -105,7 +106,9 @@ defmodule ModalTest do
     end
 
     test "runs python and captures output", %{sandbox: sb} do
-      proc = Modal.Sandbox.exec(sb, ["python3", "-c", "import math; print(math.sqrt(144))"])
+      {:ok, proc} =
+        Modal.Sandbox.exec(sb, ["python3", "-c", "import math; print(math.sqrt(144))"])
+
       {:ok, result} = Modal.ContainerProcess.await(proc)
       Modal.ContainerProcess.close(proc)
 
@@ -155,9 +158,9 @@ defmodule ModalTest do
           idle_timeout: 60
         )
 
-      {:ok, _} = Modal.Sandbox.get_task_id(sandbox2)
+      {:ok, _, sandbox2} = Modal.Sandbox.get_task_id(sandbox2)
 
-      proc = Modal.Sandbox.exec(sandbox2, ["python3", "-c", "print('from snapshot')"])
+      {:ok, proc} = Modal.Sandbox.exec(sandbox2, ["python3", "-c", "print('from snapshot')"])
       {:ok, result} = Modal.ContainerProcess.await(proc)
       Modal.ContainerProcess.close(proc)
 

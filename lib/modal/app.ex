@@ -8,6 +8,8 @@ defmodule Modal.App do
 
   Returns `{:ok, app_id}`.
   """
+  @spec lookup(GenServer.server(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
   def lookup(client, app_name, opts \\ []) do
     request = %Modal.Client.AppGetOrCreateRequest{
       app_name: app_name,

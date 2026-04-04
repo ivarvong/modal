@@ -10,12 +10,12 @@ defmodule Modal do
       )
 
       {:ok, app_id} = Modal.App.lookup(client, "my-app")
-      {:ok, image_id} = Modal.Image.get_or_create(client, ["FROM python:3.12-slim"])
+      {:ok, image_id, _status} = Modal.Image.get_or_create(client, ["FROM python:3.12-slim"])
 
       sandbox = Modal.Sandbox.create!(client, app_id: app_id, image_id: image_id, cmd: ["sleep", "infinity"])
 
-      proc = Modal.Sandbox.exec(sandbox, ["echo", "hello"])
-      proc |> Enum.each(&IO.write/1)
+      {:ok, proc} = Modal.Sandbox.exec(sandbox, ["echo", "hello"])
+      proc |> Modal.ContainerProcess.stream() |> Enum.each(&IO.write/1)
       {:ok, 0} = Modal.ContainerProcess.exit_code(proc)
       Modal.ContainerProcess.close(proc)
 

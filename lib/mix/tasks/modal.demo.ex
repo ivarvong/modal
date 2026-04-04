@@ -3,9 +3,12 @@ defmodule Mix.Tasks.Modal.Demo do
   @shortdoc "Clone a repo, install deps, snapshot, restore, run tests"
   use Mix.Task
 
+  import Modal.MixHelpers
+
   @impl true
   def run(_args) do
     Mix.Task.run("app.start")
+    :logger.set_application_level(:grpc, :warning)
     {token_id, token_secret} = credentials!()
 
     connect = fn ->
@@ -19,7 +22,7 @@ defmodule Mix.Tasks.Modal.Demo do
     step("Building image")
     t0 = now()
 
-    {:ok, image_id} =
+    {:ok, image_id, image_status} =
       Modal.Image.get_or_create(
         client,
         [
@@ -30,7 +33,7 @@ defmodule Mix.Tasks.Modal.Demo do
         app_id: app_id
       )
 
-    info("image: #{image_id} (#{elapsed(t0)})")
+    info("image: #{image_id} [#{image_status}] (#{elapsed(t0)})")
 
     header("PHASE 1: Build from scratch")
 
@@ -46,7 +49,7 @@ defmodule Mix.Tasks.Modal.Demo do
         idle_timeout: 120
       )
 
-    {:ok, _} = Modal.Sandbox.get_task_id(sandbox)
+    {:ok, _, sandbox} = Modal.Sandbox.get_task_id(sandbox)
     info("sandbox: #{sandbox.id} (boot: #{elapsed(t0)})")
 
     step("Cloning ivarvong/pyex")
@@ -81,7 +84,7 @@ defmodule Mix.Tasks.Modal.Demo do
         idle_timeout: 120
       )
 
-    {:ok, _} = Modal.Sandbox.get_task_id(sandbox2)
+    {:ok, _, sandbox2} = Modal.Sandbox.get_task_id(sandbox2)
     info("sandbox: #{sandbox2.id} (boot: #{elapsed(t0)})")
 
     step("Verifying snapshot")
@@ -109,7 +112,7 @@ defmodule Mix.Tasks.Modal.Demo do
     t0 = now()
     info("$ #{cmd}")
 
-    proc = Modal.Sandbox.exec(sandbox, ["bash", "-c", cmd], opts)
+    proc = Modal.Sandbox.exec!(sandbox, ["bash", "-c", cmd], opts)
     {:ok, result} = Modal.ContainerProcess.await(proc)
     Modal.ContainerProcess.close(proc)
 
@@ -125,7 +128,7 @@ defmodule Mix.Tasks.Modal.Demo do
     t0 = now()
     info("$ #{cmd}")
 
-    proc = Modal.Sandbox.exec(sandbox, ["bash", "-c", cmd])
+    proc = Modal.Sandbox.exec!(sandbox, ["bash", "-c", cmd])
 
     exit_task =
       Task.async(fn ->
@@ -133,27 +136,13 @@ defmodule Mix.Tasks.Modal.Demo do
         code
       end)
 
-    proc |> Enum.each(fn chunk -> IO.write("  " <> chunk) end)
+    proc |> Modal.ContainerProcess.stream() |> Enum.each(fn chunk -> IO.write("  " <> chunk) end)
 
     code = Task.await(exit_task, :infinity)
     Modal.ContainerProcess.close(proc)
 
     color = if (code || 0) == 0, do: "\e[32m", else: "\e[31m"
     info("#{color}exit: #{code || 0}\e[0m (#{elapsed(t0)})")
-  end
-
-  defp credentials! do
-    id = System.get_env("MODAL_TOKEN_ID")
-    secret = System.get_env("MODAL_TOKEN_SECRET")
-    unless id && secret, do: Mix.raise("Set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET")
-    {id, secret}
-  end
-
-  defp now, do: System.monotonic_time(:millisecond)
-
-  defp elapsed(t0) do
-    ms = System.monotonic_time(:millisecond) - t0
-    if ms < 1000, do: "#{ms}ms", else: "#{Float.round(ms / 1000, 1)}s"
   end
 
   defp header(msg), do: Mix.shell().info("\n\e[1m=== #{msg} ===\e[0m")

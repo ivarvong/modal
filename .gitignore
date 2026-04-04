@@ -28,5 +28,9 @@ modal-*.tar
 # Environment / secrets
 .env
 
+# Output artifacts from mix tasks
+*.mp4
+*.png
+
 # Reference repo
 /modal-client/

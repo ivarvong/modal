@@ -1,20 +1,19 @@
 defmodule Modal.RPC do
   @moduledoc false
 
-  @doc "Unary RPC through the control plane."
   def call(client, method, request, timeout \\ 30_000) when is_atom(method) do
-    Modal.Client.rpc(client, stub_method(method), request, timeout)
+    client_impl().rpc(client, stub_method(method), request, timeout)
   end
 
-  @doc "Server-streaming RPC, collects all messages."
   def stream(client, method, request, timeout \\ 60_000) when is_atom(method) do
-    Modal.Client.stream_rpc(client, stub_method(method), request, timeout)
+    client_impl().stream_rpc(client, stub_method(method), request, timeout)
   end
 
-  @doc "Server-streaming RPC with per-message callback."
   def stream_each(client, method, request, callback, timeout \\ :infinity) when is_atom(method) do
-    Modal.Client.stream_rpc_each(client, stub_method(method), request, callback, timeout)
+    client_impl().stream_rpc_each(client, stub_method(method), request, callback, timeout)
   end
+
+  defp client_impl, do: Application.get_env(:modal, :client_impl, Modal.Client)
 
   @methods %{
     AppGetOrCreate: :app_get_or_create,

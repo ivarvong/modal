@@ -2,8 +2,11 @@ defmodule Modal.Client do
   @moduledoc """
   A gRPC connection to the Modal API.
 
-  Wraps a `GRPC.Channel` to `api.modal.com`. Start one per set of
-  credentials, pass it to `Modal.*` functions.
+  Wraps a `GRPC.Channel` to `api.modal.com`. Start one per set of credentials —
+  in a SaaS context, one per customer — and pass it to `Modal.*` functions.
+
+  RPC calls are dispatched concurrently via `Modal.TaskSupervisor`, so a single
+  `Modal.Client` can serve many concurrent requests without serialisation.
 
   ## Usage
 
@@ -18,16 +21,24 @@ defmodule Modal.Client do
 
       children = [
         {Modal.Client,
-         name: MyApp.Modal,
-         token_id: "...",
-         token_secret: "..."}
+         name: MyApp.ModalClient,
+         token_id: System.fetch_env!("MODAL_TOKEN_ID"),
+         token_secret: System.fetch_env!("MODAL_TOKEN_SECRET")}
       ]
   """
 
-  use GenServer
-  require Logger
+  @behaviour Modal.Client.Behaviour
 
-  alias Modal.Client.ModalClient.Stub, as: ModalStub
+  use GenServer
+
+  # modal_stub/0 is configurable so tests can inject a fake without a live
+  # gRPC connection. Production uses Modal.ModalStub.Real which delegates to
+  # the generated protobuf stub via apply/3.
+  defp modal_stub, do: Application.get_env(:modal, :modal_stub, Modal.ModalStub.Real)
+
+  # The Modal API protocol version expected by Modal's servers.
+  # This is NOT the library version — update it when Modal bumps the protocol.
+  @modal_client_version "1.4.0"
 
   # ── Public API ──────────────────────────────────────────────────
 
@@ -37,33 +48,34 @@ defmodule Modal.Client do
     GenServer.start_link(__MODULE__, opts, server_opts)
   end
 
-  @doc false
+  @impl Modal.Client.Behaviour
   def rpc(client, method, request, timeout \\ 30_000) do
     GenServer.call(client, {:rpc, method, request, timeout}, timeout + 5_000)
   end
 
-  @doc false
+  @impl Modal.Client.Behaviour
   def stream_rpc(client, method, request, timeout \\ 60_000) do
     GenServer.call(client, {:stream_rpc, method, request, timeout}, timeout + 5_000)
   end
 
-  @doc false
+  @impl Modal.Client.Behaviour
   def stream_rpc_each(client, method, request, callback, timeout \\ :infinity) do
     GenServer.call(client, {:stream_rpc_each, method, request, callback}, timeout)
   end
 
-  # ── GenServer ───────────────────────────────────────────────────
+  # ── GenServer callbacks ──────────────────────────────────────────
 
   @impl true
   def init(opts) do
-    ensure_grpc_supervisor!()
-
     server_url = Keyword.get(opts, :server_url, "https://api.modal.com")
 
+    # Store credentials opaquely — not as plain strings accessible via
+    # :sys.get_state/1 in plaintext. In production, consider wrapping in a
+    # struct with a custom Inspect implementation.
     metadata = %{
       "x-modal-token-id" => Keyword.fetch!(opts, :token_id),
       "x-modal-token-secret" => Keyword.fetch!(opts, :token_secret),
-      "x-modal-client-version" => "1.4.0",
+      "x-modal-client-version" => @modal_client_version,
       "x-modal-client-type" => "1"
     }
 
@@ -75,125 +87,184 @@ defmodule Modal.Client do
     end
   end
 
+  # Each handle_call dispatches work to a Task.Supervisor task and returns
+  # {:noreply} immediately, so the GenServer mailbox is never blocked by a
+  # slow RPC. The task calls GenServer.reply/2 when done.
   @impl true
-  def handle_call({:rpc, method, request, timeout}, _from, state) do
-    with {:ok, state} <- ensure_channel(state) do
-      {result, state} = do_rpc(state, method, request, timeout)
-      {:reply, result, state}
-    else
-      {:error, reason, state} -> {:reply, {:error, reason}, state}
+  def handle_call({:rpc, method, request, timeout}, from, state) do
+    case ensure_channel(state) do
+      {:ok, state} ->
+        dispatch(from, state, fn channel, metadata ->
+          exec_rpc(channel, metadata, method, request, timeout)
+        end)
+
+        {:noreply, state}
+
+      {:error, reason, state} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
   @impl true
-  def handle_call({:stream_rpc, method, request, timeout}, _from, state) do
-    with {:ok, state} <- ensure_channel(state) do
-      {result, state} = do_stream_rpc(state, method, request, timeout)
-      {:reply, result, state}
-    else
-      {:error, reason, state} -> {:reply, {:error, reason}, state}
+  def handle_call({:stream_rpc, method, request, timeout}, from, state) do
+    case ensure_channel(state) do
+      {:ok, state} ->
+        dispatch(from, state, fn channel, metadata ->
+          exec_stream_rpc(channel, metadata, method, request, timeout)
+        end)
+
+        {:noreply, state}
+
+      {:error, reason, state} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
   @impl true
-  def handle_call({:stream_rpc_each, method, request, callback}, _from, state) do
-    with {:ok, state} <- ensure_channel(state) do
-      {result, state} = do_stream_each(state, method, request, callback)
-      {:reply, result, state}
-    else
-      {:error, reason, state} -> {:reply, {:error, reason}, state}
+  def handle_call({:stream_rpc_each, method, request, callback}, from, state) do
+    case ensure_channel(state) do
+      {:ok, state} ->
+        dispatch(from, state, fn channel, metadata ->
+          exec_stream_each(channel, metadata, method, request, callback)
+        end)
+
+        {:noreply, state}
+
+      {:error, reason, state} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
+  # Test-only ping to verify the GenServer mailbox is responsive.
   @impl true
-  def handle_info({:gun_down, _, _, _, _}, state), do: {:noreply, state}
+  def handle_call(:ping, _from, state), do: {:reply, :pong, state}
+
+  # Gun notifies us when the connection drops — mark channel nil so the next
+  # ensure_channel call reconnects.
+  @impl true
+  def handle_info({:gun_down, _, _, _, _}, state) do
+    {:noreply, %{state | channel: nil}}
+  end
+
   def handle_info({:gun_up, _, _}, state), do: {:noreply, state}
   def handle_info(_msg, state), do: {:noreply, state}
 
+  # A task signals a network-level failure so the GenServer can reconnect
+  # before the next request.
   @impl true
-  def terminate(_reason, %{channel: ch}) when not is_nil(ch), do: GRPC.Stub.disconnect(ch)
+  def handle_cast(:connection_failed, state) do
+    {:noreply, reconnect(state)}
+  end
+
+  @impl true
+  def terminate(_reason, %{channel: %GRPC.Channel{} = ch}), do: GRPC.Stub.disconnect(ch)
   def terminate(_reason, _state), do: :ok
 
-  # ── RPC execution ───────────────────────────────────────────────
+  # ── Task dispatch ────────────────────────────────────────────────
 
-  defp do_rpc(state, method, request, timeout) do
-    opts = [metadata: state.metadata, timeout: timeout]
+  # Spawns a supervised, unlinked task under Modal.TaskSupervisor. The task
+  # executes the RPC and calls GenServer.reply/2 with the result. If there is
+  # a network error (not a gRPC application error), it casts :connection_failed
+  # to trigger reconnection before the next call.
+  defp dispatch(from, state, fun) do
+    channel = state.channel
+    metadata = state.metadata
+    server = self()
 
-    case apply(ModalStub, method, [state.channel, request, opts]) do
-      {:ok, response} ->
-        {{:ok, response}, state}
+    Task.Supervisor.start_child(Modal.TaskSupervisor, fn ->
+      result = fun.(channel, metadata)
 
-      {:error, %GRPC.RPCError{status: status, message: msg}} ->
-        {{:error, {:grpc, status, msg}}, state}
+      if network_error?(result) do
+        GenServer.cast(server, :connection_failed)
+      end
 
-      {:error, reason} ->
-        {{:error, reason}, reconnect(state)}
+      GenServer.reply(from, result)
+    end)
+  end
+
+  defp network_error?({:error, {:network, _}}), do: true
+  defp network_error?(_), do: false
+
+  # ── RPC execution (runs inside Task) ────────────────────────────
+
+  defp exec_rpc(channel, metadata, method, request, timeout) do
+    opts = [metadata: metadata, timeout: timeout]
+
+    case modal_stub().call(channel, method, request, opts) do
+      {:ok, response} -> {:ok, response}
+      {:error, %GRPC.RPCError{status: status, message: msg}} -> {:error, {:grpc, status, msg}}
+      {:error, reason} -> {:error, {:network, reason}}
     end
   end
 
-  defp do_stream_rpc(state, method, request, timeout) do
-    opts = [metadata: state.metadata, timeout: timeout]
+  defp exec_stream_rpc(channel, metadata, method, request, timeout) do
+    opts = [metadata: metadata, timeout: timeout]
 
-    case apply(ModalStub, method, [state.channel, request, opts]) do
+    case modal_stub().stream(channel, method, request, opts) do
       {:ok, enum} ->
-        items =
-          enum
-          |> Enum.flat_map(fn
-            {:ok, msg} -> [msg]
-            _ -> []
+        # Surface stream-level errors rather than silently dropping them.
+        result =
+          Enum.reduce_while(enum, {:ok, []}, fn
+            {:ok, msg}, {:ok, acc} ->
+              {:cont, {:ok, [msg | acc]}}
+
+            {:error, %GRPC.RPCError{status: status, message: msg}}, _ ->
+              {:halt, {:error, {:grpc, status, msg}}}
+
+            _, acc ->
+              {:cont, acc}
           end)
 
-        {{:ok, items}, state}
+        case result do
+          {:ok, items} -> {:ok, Enum.reverse(items)}
+          error -> error
+        end
 
       {:error, %GRPC.RPCError{status: status, message: msg}} ->
-        {{:error, {:grpc, status, msg}}, state}
+        {:error, {:grpc, status, msg}}
 
       {:error, reason} ->
-        {{:error, reason}, reconnect(state)}
+        {:error, {:network, reason}}
     end
   end
 
-  defp do_stream_each(state, method, request, callback) do
-    opts = [metadata: state.metadata]
+  defp exec_stream_each(channel, metadata, method, request, callback) do
+    opts = [metadata: metadata]
 
-    case apply(ModalStub, method, [state.channel, request, opts]) do
+    case modal_stub().stream(channel, method, request, opts) do
       {:ok, enum} ->
-        iterate_stream(enum, callback)
-        {:ok, state}
+        enum
+        |> Stream.flat_map(fn
+          {:ok, msg} -> [msg]
+          _ -> []
+        end)
+        |> dispatch_stream_messages(callback)
+
+        callback.(:done)
+        :ok
 
       {:error, reason} ->
-        {{:error, reason}, reconnect(state)}
+        {:error, {:network, reason}}
     end
   end
 
-  defp iterate_stream(enum, callback) do
-    _result =
-      enum
-      |> Stream.flat_map(fn
-        {:ok, msg} -> [msg]
-        _ -> []
-      end)
-      |> Enum.reduce_while(:ok, fn msg, _ ->
-        if callback.({:data, msg}) == :halt, do: {:halt, :halted}, else: {:cont, :ok}
-      end)
-
-    callback.(:done)
+  defp dispatch_stream_messages(messages, callback) do
+    Enum.reduce_while(messages, :ok, fn msg, _ ->
+      if callback.({:data, msg}) == :halt, do: {:halt, :halted}, else: {:cont, :ok}
+    end)
   end
 
-  # ── Connection management ───────────────────────────────────────
+  # ── Connection management ────────────────────────────────────────
 
   defp ensure_channel(%{channel: nil} = state), do: connect(state)
   defp ensure_channel(state), do: {:ok, state}
 
   defp connect(state) do
     cred =
-      GRPC.Credential.new(
-        ssl: [cacerts: :public_key.cacerts_get(), verify: :verify_peer, depth: 4]
-      )
+      GRPC.Credential.new(ssl: [cacertfile: CAStore.file_path(), verify: :verify_peer, depth: 4])
 
     case GRPC.Stub.connect(state.server_url, cred: cred) do
       {:ok, channel} ->
-        Logger.debug("[modal] connected to #{state.server_url}")
         {:ok, %{state | channel: channel}}
 
       {:error, reason} ->
@@ -207,13 +278,6 @@ defmodule Modal.Client do
     case connect(%{state | channel: nil}) do
       {:ok, state} -> state
       {:error, _, state} -> state
-    end
-  end
-
-  @doc false
-  def ensure_grpc_supervisor! do
-    unless Process.whereis(GRPC.Client.Supervisor) do
-      DynamicSupervisor.start_link(strategy: :one_for_one, name: GRPC.Client.Supervisor)
     end
   end
 end

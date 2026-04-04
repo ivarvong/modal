@@ -3,9 +3,12 @@ defmodule Mix.Tasks.Modal.Smoketest do
   @shortdoc "Create a sandbox, run Python, print the result"
   use Mix.Task
 
+  import Modal.MixHelpers
+
   @impl true
   def run(_args) do
     Mix.Task.run("app.start")
+    :logger.set_application_level(:grpc, :warning)
     {token_id, token_secret} = credentials!()
 
     {:ok, client} = Modal.Client.start_link(token_id: token_id, token_secret: token_secret)
@@ -53,12 +56,5 @@ defmodule Mix.Tasks.Modal.Smoketest do
 
     Modal.Sandbox.terminate(sandbox)
     GenServer.stop(client)
-  end
-
-  defp credentials! do
-    id = System.get_env("MODAL_TOKEN_ID")
-    secret = System.get_env("MODAL_TOKEN_SECRET")
-    unless id && secret, do: Mix.raise("Set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (source .env)")
-    {id, secret}
   end
 end
