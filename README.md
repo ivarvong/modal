@@ -24,7 +24,7 @@ end
 )
 
 {:ok, app_id} = Modal.App.lookup(client, "my-app")
-{:ok, image_id} = Modal.Image.get_or_create(client, ["FROM python:3.12-slim"])
+{:ok, image_id, _status} = Modal.Image.get_or_create(client, ["FROM python:3.12-slim"])
 
 sandbox = Modal.Sandbox.create!(client,
   app_id: app_id,
@@ -33,13 +33,13 @@ sandbox = Modal.Sandbox.create!(client,
 )
 
 # Execute with streaming stdout
-proc = Modal.Sandbox.exec(sandbox, ["echo", "hello from modal"])
-proc |> Enum.each(&IO.write/1)
+{:ok, proc} = Modal.Sandbox.exec(sandbox, ["echo", "hello from modal"])
+proc |> Modal.ContainerProcess.stream() |> Enum.each(&IO.write/1)
 {:ok, 0} = Modal.ContainerProcess.exit_code(proc)
 Modal.ContainerProcess.close(proc)
 
 # Or collect all output at once
-proc = Modal.Sandbox.exec(sandbox, ["python3", "-c", "print(2+2)"])
+{:ok, proc} = Modal.Sandbox.exec(sandbox, ["python3", "-c", "print(2+2)"])
 {:ok, %{stdout: "4\n", code: 0}} = Modal.ContainerProcess.await(proc)
 Modal.ContainerProcess.close(proc)
 
@@ -59,6 +59,28 @@ sandbox2 = Modal.Sandbox.create!(client,
   cmd: ["sleep", "infinity"]
 )
 ```
+
+## Supervision
+
+`Modal.Client` is a GenServer — add it to your supervision tree for
+production use:
+
+```elixir
+children = [
+  {Modal.Client,
+   name: MyApp.ModalClient,
+   token_id: System.fetch_env!("MODAL_TOKEN_ID"),
+   token_secret: System.fetch_env!("MODAL_TOKEN_SECRET")}
+]
+
+Supervisor.start_link(children, strategy: :one_for_one)
+```
+
+## Telemetry
+
+All RPC calls emit `[:modal, :rpc, :start]`, `[:modal, :rpc, :stop]`, and
+`[:modal, :rpc, :exception]` telemetry events with `%{method: atom, kind: atom}`
+metadata.
 
 ## Modules
 

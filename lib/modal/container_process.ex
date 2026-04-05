@@ -22,6 +22,8 @@ defmodule Modal.ContainerProcess do
 
       Modal.ContainerProcess.close(proc)
 
+  If the calling process crashes, the channel is cleaned up automatically.
+
   ## JWT lifetime
 
   The JWT used to authenticate with the worker is obtained at exec time and
@@ -36,27 +38,32 @@ defmodule Modal.ContainerProcess do
   alias Modal.TaskCommandRouter, as: TCR
 
   @wait_attempt_timeout 60_000
-  # Configurable via Application env so tests can set it to 0.
-  defp wait_retry_delay, do: Application.get_env(:modal, :wait_retry_delay, 1_000)
   # Warn when JWT has less than this many seconds remaining.
   @jwt_expiry_warning_secs 60
+  @default_tcr_stub Modal.TaskCommandRouter.TaskCommandRouter.Stub
 
-  defstruct [:channel, :task_id, :exec_id, :jwt, :jwt_exp]
+  defstruct [:channel, :task_id, :exec_id, :jwt, :jwt_exp, :tcr_stub, :monitor_pid]
 
   @type t :: %__MODULE__{
           channel: GRPC.Channel.t(),
           task_id: String.t(),
           exec_id: String.t(),
           jwt: String.t(),
-          jwt_exp: non_neg_integer()
+          jwt_exp: non_neg_integer(),
+          tcr_stub: module() | nil,
+          monitor_pid: pid() | nil
         }
 
   @doc false
   def start(%Modal.Sandbox{} = sandbox, command, opts \\ []) do
+    caller = self()
+
     with {:ok, task_id, _sandbox} <- Modal.Sandbox.get_task_id(sandbox),
          {:ok, channel, jwt} <- connect_to_worker(sandbox.client, task_id) do
       exec_id =
         "ex-#{System.unique_integer([:positive, :monotonic])}-#{:crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)}"
+
+      tcr = Keyword.get(opts, :tcr_stub)
 
       request = %TCR.TaskExecStartRequest{
         task_id: task_id,
@@ -68,14 +75,21 @@ defmodule Modal.ContainerProcess do
         workdir: Keyword.get(opts, :workdir, "")
       }
 
-      case tcr_stub().task_exec_start(channel, request, metadata: auth(jwt)) do
+      stub = tcr || @default_tcr_stub
+
+      case stub.task_exec_start(channel, request, metadata: auth(jwt)) do
         {:ok, _} ->
+          # Spawn a monitor that cleans up the gRPC channel if the caller dies.
+          monitor_pid = start_channel_monitor(channel, caller)
+
           proc = %__MODULE__{
             channel: channel,
             task_id: task_id,
             exec_id: exec_id,
             jwt: jwt,
-            jwt_exp: Modal.JWT.parse_exp(jwt)
+            jwt_exp: Modal.JWT.parse_exp(jwt),
+            tcr_stub: tcr,
+            monitor_pid: monitor_pid
           }
 
           {:ok, proc}
@@ -102,7 +116,7 @@ defmodule Modal.ContainerProcess do
         offset: 0
       }
 
-      case tcr_stub().task_exec_stdio_read(proc.channel, request, metadata: auth(proc.jwt)) do
+      case tcr_stub(proc).task_exec_stdio_read(proc.channel, request, metadata: auth(proc.jwt)) do
         {:ok, grpc_enum} ->
           Stream.flat_map(grpc_enum, fn
             {:ok, %{data: data}} when byte_size(data) > 0 -> [data]
@@ -138,7 +152,7 @@ defmodule Modal.ContainerProcess do
       eof: Keyword.get(opts, :eof, false)
     }
 
-    case tcr_stub().task_exec_stdin_write(proc.channel, request, metadata: auth(proc.jwt)) do
+    case tcr_stub(proc).task_exec_stdin_write(proc.channel, request, metadata: auth(proc.jwt)) do
       {:ok, _} -> :ok
       {:error, %GRPC.RPCError{message: msg}} -> {:error, msg}
       {:error, reason} -> {:error, reason}
@@ -160,8 +174,6 @@ defmodule Modal.ContainerProcess do
   def await(%__MODULE__{} = proc, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, :infinity)
 
-    # Wrap both exit_code and stdout collection in a single Task so the
-    # timeout applies to the whole operation, not just one half of it.
     outer =
       Task.async(fn ->
         stdout_task = Task.async(fn -> proc |> stream() |> Enum.join() end)
@@ -192,9 +204,26 @@ defmodule Modal.ContainerProcess do
 
   @doc "Close the gRPC channel to the worker."
   @spec close(t()) :: :ok
-  def close(%__MODULE__{channel: channel}) do
+  def close(%__MODULE__{channel: channel, monitor_pid: monitor_pid}) do
+    if monitor_pid, do: send(monitor_pid, :close)
     GRPC.Stub.disconnect(channel)
     :ok
+  end
+
+  # ── Channel monitor ─────────────────────────────────────────────
+
+  defp start_channel_monitor(channel, caller) do
+    spawn(fn ->
+      ref = Process.monitor(caller)
+
+      receive do
+        {:DOWN, ^ref, :process, ^caller, _reason} ->
+          GRPC.Stub.disconnect(channel)
+
+        :close ->
+          :ok
+      end
+    end)
   end
 
   # ── JWT expiry ───────────────────────────────────────────────────
@@ -223,10 +252,13 @@ defmodule Modal.ContainerProcess do
 
   # ── Wait with retry ──────────────────────────────────────────────
 
+  # Configurable via Application env so tests can set it to 0.
+  defp wait_retry_delay, do: Application.get_env(:modal, :wait_retry_delay, 1_000)
+
   defp wait_loop(proc, attempts) do
     request = %TCR.TaskExecWaitRequest{task_id: proc.task_id, exec_id: proc.exec_id}
 
-    case tcr_stub().task_exec_wait(proc.channel, request,
+    case tcr_stub(proc).task_exec_wait(proc.channel, request,
            metadata: auth(proc.jwt),
            timeout: @wait_attempt_timeout
          ) do
@@ -241,10 +273,8 @@ defmodule Modal.ContainerProcess do
         {:ok, code}
 
       {:error, _} when attempts < 100 ->
-        # Check JWT before sleeping — if it expired mid-flight, fail fast
-        # instead of retrying 100 times with a dead credential.
         with :ok <- check_jwt(proc) do
-          Process.sleep(wait_retry_delay())
+          Process.sleep(Modal.Backoff.delay(attempts, wait_retry_delay()))
           wait_loop(proc, attempts + 1)
         end
 
@@ -274,8 +304,8 @@ defmodule Modal.ContainerProcess do
     end
   end
 
-  defp tcr_stub,
-    do: Application.get_env(:modal, :tcr_stub, Modal.TaskCommandRouter.TaskCommandRouter.Stub)
+  defp tcr_stub(%__MODULE__{tcr_stub: nil}), do: @default_tcr_stub
+  defp tcr_stub(%__MODULE__{tcr_stub: stub}), do: stub
 
   defp auth(jwt), do: %{"authorization" => "Bearer #{jwt}"}
 

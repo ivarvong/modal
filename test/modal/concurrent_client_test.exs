@@ -8,30 +8,21 @@ defmodule Modal.ConcurrentClientTest do
   """
   use ExUnit.Case, async: false
 
-  # Restore the configured stubs after each test.
-  setup do
-    original_stub = Application.get_env(:modal, :modal_stub)
-    original_impl = Application.get_env(:modal, :client_impl)
-
-    on_exit(fn ->
-      Application.put_env(:modal, :modal_stub, original_stub)
-      Application.put_env(:modal, :client_impl, original_impl)
-    end)
-
-    :ok
-  end
-
   # Start a real Modal.Client with a fake (non-connecting) URL, then inject
   # a fake channel so the GenServer thinks it's connected. The stub handles
   # all calls without touching the network.
-  defp start_client(token_id, token_secret \\ "test-secret") do
+  defp start_client(token_id, opts \\ []) do
+    token_secret = Keyword.get(opts, :token_secret, "test-secret")
+    stub = Keyword.get(opts, :modal_stub, Modal.Test.SlowStub)
+
     {:ok, client} =
       Modal.Client.start_link(
         token_id: token_id,
         token_secret: token_secret,
         # Port 1 is reserved and will be refused immediately — gRPC handles
         # this gracefully (channel: nil) rather than crashing init/1.
-        server_url: "localhost:1"
+        server_url: "localhost:1",
+        modal_stub: stub
       )
 
     # Bypass the real connection — inject a fake channel so ensure_channel/1
@@ -44,8 +35,6 @@ defmodule Modal.ConcurrentClientTest do
 
   describe "async dispatch" do
     test "N concurrent RPCs complete in parallel, not serially" do
-      Application.put_env(:modal, :modal_stub, Modal.Test.SlowStub)
-
       client = start_client("ak-concurrent-test")
 
       n = 5
@@ -73,9 +62,9 @@ defmodule Modal.ConcurrentClientTest do
       assert Enum.all?(results, &match?({:ok, _}, &1)),
              "Expected all RPCs to succeed, got: #{inspect(results)}"
 
-      # If dispatched serially: elapsed ≈ n × stub_delay_ms = 250ms.
-      # If dispatched concurrently: elapsed ≈ stub_delay_ms = 50ms.
-      # We allow 3× the stub delay to absorb scheduling jitter.
+      # If dispatched serially: elapsed ~ n * stub_delay_ms = 250ms.
+      # If dispatched concurrently: elapsed ~ stub_delay_ms = 50ms.
+      # We allow 3x the stub delay to absorb scheduling jitter.
       assert elapsed_ms < stub_delay_ms * 3,
              "Expected parallel execution (~#{stub_delay_ms}ms), " <>
                "got #{elapsed_ms}ms — serial would be #{n * stub_delay_ms}ms"
@@ -84,8 +73,6 @@ defmodule Modal.ConcurrentClientTest do
     end
 
     test "GenServer mailbox stays responsive while RPCs are in-flight" do
-      Application.put_env(:modal, :modal_stub, Modal.Test.SlowStub)
-
       client = start_client("ak-mailbox-test")
 
       # Fire a slow RPC asynchronously — if the GenServer is blocked on this
@@ -109,13 +96,20 @@ defmodule Modal.ConcurrentClientTest do
 
   describe "credential isolation" do
     test "two clients with different credentials never share metadata" do
-      Application.put_env(:modal, :modal_stub, Modal.Test.CredentialSpyStub)
-
       # Register this test process as the recorder.
       :persistent_term.put(:modal_spy_recorder, self())
 
-      client_a = start_client("ak-client-a", "as-secret-a")
-      client_b = start_client("ak-client-b", "as-secret-b")
+      client_a =
+        start_client("ak-client-a",
+          token_secret: "as-secret-a",
+          modal_stub: Modal.Test.CredentialSpyStub
+        )
+
+      client_b =
+        start_client("ak-client-b",
+          token_secret: "as-secret-b",
+          modal_stub: Modal.Test.CredentialSpyStub
+        )
 
       # Fire one RPC through each client.
       {:ok, _} =
@@ -142,10 +136,13 @@ defmodule Modal.ConcurrentClientTest do
     end
 
     test "credentials are set once at start and never mutate" do
-      Application.put_env(:modal, :modal_stub, Modal.Test.CredentialSpyStub)
       :persistent_term.put(:modal_spy_recorder, self())
 
-      client = start_client("ak-immutable", "as-immutable")
+      client =
+        start_client("ak-immutable",
+          token_secret: "as-immutable",
+          modal_stub: Modal.Test.CredentialSpyStub
+        )
 
       # Fire 3 RPCs — the token must be the same every time.
       for _ <- 1..3 do
@@ -160,6 +157,38 @@ defmodule Modal.ConcurrentClientTest do
 
       GenServer.stop(client)
       :persistent_term.erase(:modal_spy_recorder)
+    end
+  end
+
+  # ── Bounded concurrency ──────────────────────────────────────────
+
+  describe "max_concurrency" do
+    test "returns {:error, :overloaded} when at capacity" do
+      client = start_client("ak-bounded", modal_stub: Modal.Test.SlowStub)
+
+      # Override max_concurrency to 2.
+      :sys.replace_state(client, fn state -> %{state | max_concurrency: 2} end)
+
+      # Fire 2 RPCs that will block (SlowStub sleeps 50ms).
+      tasks =
+        for _ <- 1..2 do
+          Task.async(fn ->
+            Modal.Client.rpc(client, :sandbox_list, %Modal.Client.SandboxListRequest{}, 5_000)
+          end)
+        end
+
+      # Give tasks a moment to start.
+      Process.sleep(10)
+
+      # Third call should be rejected immediately.
+      assert {:error, :overloaded} =
+               Modal.Client.rpc(client, :sandbox_list, %Modal.Client.SandboxListRequest{}, 1_000)
+
+      # Original tasks complete fine.
+      results = Task.await_many(tasks, 5_000)
+      assert Enum.all?(results, &match?({:ok, _}, &1))
+
+      GenServer.stop(client)
     end
   end
 

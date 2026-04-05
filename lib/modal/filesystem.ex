@@ -167,49 +167,56 @@ defmodule Modal.Filesystem do
     RPC.call(client, :ContainerFilesystemExec, request)
   end
 
-  # Collects the output of a ContainerFilesystemExecGetOutput stream.
-  #
-  # Uses a per-call Agent as the accumulator. This avoids the process-mailbox
-  # side-channel approach: each concurrent filesystem operation owns its own
-  # Agent, so there is no risk of mailbox message interleaving between ops.
+  # Collects the output of a ContainerFilesystemExecGetOutput stream using
+  # a pure reducer — no Agent, no per-call process.
   defp fs_wait(client, exec_id, retries \\ 10) do
     request = %Modal.Client.ContainerFilesystemExecGetOutputRequest{
       exec_id: exec_id,
       timeout: 55.0
     }
 
-    {:ok, acc} = Agent.start_link(fn -> %{data: [], error: nil} end)
+    initial = %{data: [], error: nil}
 
-    result =
-      RPC.stream_each(
-        client,
-        :ContainerFilesystemExecGetOutput,
-        request,
-        &handle_fs_batch(&1, acc),
-        60_000
-      )
-
-    %{data: data, error: error} = Agent.get(acc, & &1)
-    Agent.stop(acc)
-
-    cond do
-      error != nil ->
+    case RPC.stream_reduce(
+           client,
+           :ContainerFilesystemExecGetOutput,
+           request,
+           initial,
+           &fs_reducer/2,
+           60_000
+         ) do
+      {:ok, %{error: error}} when error not in [nil, ""] ->
         {:error, {:filesystem_error, error.error_message}}
 
-      result == :ok ->
-        # Chunks were prepended during streaming; reverse once here — O(n) total.
+      {:ok, %{data: data}} ->
         {:ok, Enum.reverse(data)}
 
-      transient_error?(result) and retries > 0 ->
-        # Only retry on network-level failures. Permanent errors (gRPC status
-        # codes like UNAUTHENTICATED or NOT_FOUND) must not be retried — they
-        # would waste 10 seconds before surfacing a clear failure.
-        Process.sleep(fs_retry_delay())
-        fs_wait(client, exec_id, retries - 1)
+      {:error, reason} when retries > 0 ->
+        if transient_error?({:error, reason}) do
+          Process.sleep(Modal.Backoff.delay(retries, fs_retry_delay()))
+          fs_wait(client, exec_id, retries - 1)
+        else
+          {:error, reason}
+        end
 
-      true ->
-        {:error, result}
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  defp fs_reducer(%{error: error} = _batch, acc) when error not in [nil, ""] do
+    {:halt, %{acc | error: error}}
+  end
+
+  defp fs_reducer(batch, acc) do
+    new_data =
+      if batch.output != [],
+        do: Enum.reverse(batch.output) ++ acc.data,
+        else: acc.data
+
+    if batch.eof,
+      do: {:halt, %{acc | data: new_data}},
+      else: {:cont, %{acc | data: new_data}}
   end
 
   # Network errors are transient; gRPC application errors are permanent.
@@ -218,24 +225,6 @@ defmodule Modal.Filesystem do
 
   # Configurable so tests can set it to 0.
   defp fs_retry_delay, do: Application.get_env(:modal, :fs_retry_delay, 1_000)
-
-  defp handle_fs_batch({:data, %{error: error}}, acc) when error not in [nil, ""] do
-    Agent.update(acc, &%{&1 | error: error})
-    :halt
-  end
-
-  defp handle_fs_batch({:data, batch}, acc) do
-    if batch.output != [] do
-      # Prepend reversed chunks so the final Enum.reverse in fs_wait is O(n).
-      Agent.update(acc, fn %{data: data} = s ->
-        %{s | data: Enum.reverse(batch.output) ++ data}
-      end)
-    end
-
-    if batch.eof, do: :halt, else: :ok
-  end
-
-  defp handle_fs_batch(:done, _acc), do: :ok
 
   defp parse_ls_output(raw) do
     case Jason.decode(raw) do

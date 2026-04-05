@@ -2,15 +2,43 @@ defmodule Modal.RPC do
   @moduledoc false
 
   def call(client, method, request, timeout \\ 30_000) when is_atom(method) do
-    client_impl().rpc(client, stub_method(method), request, timeout)
+    :telemetry.span([:modal, :rpc], %{method: method, kind: :unary}, fn ->
+      result = client_impl().rpc(client, stub_method(method), request, timeout)
+      {result, %{method: method, kind: :unary}}
+    end)
   end
 
   def stream(client, method, request, timeout \\ 60_000) when is_atom(method) do
-    client_impl().stream_rpc(client, stub_method(method), request, timeout)
+    :telemetry.span([:modal, :rpc], %{method: method, kind: :stream}, fn ->
+      result = client_impl().stream_rpc(client, stub_method(method), request, timeout)
+      {result, %{method: method, kind: :stream}}
+    end)
   end
 
   def stream_each(client, method, request, callback, timeout \\ :infinity) when is_atom(method) do
-    client_impl().stream_rpc_each(client, stub_method(method), request, callback, timeout)
+    :telemetry.span([:modal, :rpc], %{method: method, kind: :stream_each}, fn ->
+      result =
+        client_impl().stream_rpc_each(client, stub_method(method), request, callback, timeout)
+
+      {result, %{method: method, kind: :stream_each}}
+    end)
+  end
+
+  def stream_reduce(client, method, request, acc, reducer, timeout \\ :infinity)
+      when is_atom(method) do
+    :telemetry.span([:modal, :rpc], %{method: method, kind: :stream_reduce}, fn ->
+      result =
+        client_impl().stream_rpc_reduce(
+          client,
+          stub_method(method),
+          request,
+          acc,
+          reducer,
+          timeout
+        )
+
+      {result, %{method: method, kind: :stream_reduce}}
+    end)
   end
 
   defp client_impl, do: Application.get_env(:modal, :client_impl, Modal.Client)

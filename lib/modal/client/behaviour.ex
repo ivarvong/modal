@@ -25,4 +25,14 @@ defmodule Modal.Client.Behaviour do
               callback :: function(),
               timeout :: timeout()
             ) :: :ok | {:error, term()}
+
+  @doc "Server-streaming RPC — reduces messages with an accumulator."
+  @callback stream_rpc_reduce(
+              client :: GenServer.server(),
+              method :: atom(),
+              request :: term(),
+              initial_acc :: term(),
+              reducer :: (term(), term() -> {:cont, term()} | {:halt, term()}),
+              timeout :: timeout()
+            ) :: {:ok, term()} | {:error, term()}
 end

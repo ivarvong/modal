@@ -23,10 +23,7 @@ defmodule Modal.MixProject do
   end
 
   def application do
-    [
-      extra_applications: [:logger],
-      mod: {Modal.Application, []}
-    ]
+    [extra_applications: [:logger]]
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
@@ -39,6 +36,7 @@ defmodule Modal.MixProject do
       {:protobuf, "~> 0.16.0"},
       {:jason, "~> 1.4"},
       {:nimble_options, "~> 1.1"},
+      {:telemetry, "~> 1.0"},
       {:mox, "~> 1.2", only: :test},
       {:stream_data, "~> 1.3", only: [:dev, :test]},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

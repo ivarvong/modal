@@ -17,7 +17,8 @@ defmodule Modal.ContainerProcessTest do
       task_id: @task_id,
       exec_id: @exec_id,
       jwt: @jwt,
-      jwt_exp: 9_999_999_999
+      jwt_exp: 9_999_999_999,
+      tcr_stub: Modal.TaskCommandRouter.Mock
     }
   end
 
@@ -28,7 +29,8 @@ defmodule Modal.ContainerProcessTest do
       exec_id: @exec_id,
       jwt: "h.e.s",
       # 1970 — always expired
-      jwt_exp: 1
+      jwt_exp: 1,
+      tcr_stub: Modal.TaskCommandRouter.Mock
     }
   end
 
