@@ -223,8 +223,8 @@ defmodule Modal.Filesystem do
   defp transient_error?({:error, {:network, _}}), do: true
   defp transient_error?(_), do: false
 
-  # Configurable so tests can set it to 0.
-  defp fs_retry_delay, do: Application.get_env(:modal, :fs_retry_delay, 1_000)
+  @fs_retry_delay Application.compile_env(:modal, :fs_retry_delay, 1_000)
+  defp fs_retry_delay, do: @fs_retry_delay
 
   defp parse_ls_output(raw) do
     case Jason.decode(raw) do
@@ -234,6 +234,7 @@ defmodule Modal.Filesystem do
   end
 
   @doc false
+  @spec chunk_binary(binary(), pos_integer()) :: [binary()]
   def chunk_binary(data, chunk_size \\ @write_chunk_size),
     do: do_chunk(data, chunk_size, 0, [])
 

@@ -44,17 +44,18 @@ defmodule Modal.ContainerProcess do
 
   defstruct [:channel, :task_id, :exec_id, :jwt, :jwt_exp, :tcr_stub, :monitor_pid]
 
-  @type t :: %__MODULE__{
-          channel: GRPC.Channel.t(),
-          task_id: String.t(),
-          exec_id: String.t(),
-          jwt: String.t(),
-          jwt_exp: non_neg_integer(),
-          tcr_stub: module() | nil,
-          monitor_pid: pid() | nil
-        }
+  @opaque t :: %__MODULE__{
+            channel: GRPC.Channel.t(),
+            task_id: String.t(),
+            exec_id: String.t(),
+            jwt: String.t(),
+            jwt_exp: non_neg_integer(),
+            tcr_stub: module() | nil,
+            monitor_pid: pid() | nil
+          }
 
   @doc false
+  @spec start(Modal.Sandbox.t(), [String.t()], keyword()) :: {:ok, t()} | {:error, term()}
   def start(%Modal.Sandbox{} = sandbox, command, opts \\ []) do
     caller = self()
 
@@ -213,17 +214,27 @@ defmodule Modal.ContainerProcess do
   # ── Channel monitor ─────────────────────────────────────────────
 
   defp start_channel_monitor(channel, caller) do
-    spawn(fn ->
-      ref = Process.monitor(caller)
+    parent = self()
 
-      receive do
-        {:DOWN, ^ref, :process, ^caller, _reason} ->
-          GRPC.Stub.disconnect(channel)
+    pid =
+      spawn(fn ->
+        ref = Process.monitor(caller)
+        send(parent, {self(), :monitor_ready})
 
-        :close ->
-          :ok
-      end
-    end)
+        receive do
+          {:DOWN, ^ref, :process, ^caller, _reason} ->
+            GRPC.Stub.disconnect(channel)
+
+          :close ->
+            :ok
+        end
+      end)
+
+    # Block until the monitor is watching the caller — closes the race where
+    # the caller could crash before Process.monitor/1 runs.
+    receive do
+      {^pid, :monitor_ready} -> pid
+    end
   end
 
   # ── JWT expiry ───────────────────────────────────────────────────
@@ -252,8 +263,8 @@ defmodule Modal.ContainerProcess do
 
   # ── Wait with retry ──────────────────────────────────────────────
 
-  # Configurable via Application env so tests can set it to 0.
-  defp wait_retry_delay, do: Application.get_env(:modal, :wait_retry_delay, 1_000)
+  @wait_retry_delay Application.compile_env(:modal, :wait_retry_delay, 1_000)
+  defp wait_retry_delay, do: @wait_retry_delay
 
   defp wait_loop(proc, attempts) do
     request = %TCR.TaskExecWaitRequest{task_id: proc.task_id, exec_id: proc.exec_id}

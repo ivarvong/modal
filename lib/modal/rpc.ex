@@ -1,48 +1,11 @@
 defmodule Modal.RPC do
   @moduledoc false
 
-  def call(client, method, request, timeout \\ 30_000) when is_atom(method) do
-    :telemetry.span([:modal, :rpc], %{method: method, kind: :unary}, fn ->
-      result = client_impl().rpc(client, stub_method(method), request, timeout)
-      {result, %{method: method, kind: :unary}}
-    end)
-  end
-
-  def stream(client, method, request, timeout \\ 60_000) when is_atom(method) do
-    :telemetry.span([:modal, :rpc], %{method: method, kind: :stream}, fn ->
-      result = client_impl().stream_rpc(client, stub_method(method), request, timeout)
-      {result, %{method: method, kind: :stream}}
-    end)
-  end
-
-  def stream_each(client, method, request, callback, timeout \\ :infinity) when is_atom(method) do
-    :telemetry.span([:modal, :rpc], %{method: method, kind: :stream_each}, fn ->
-      result =
-        client_impl().stream_rpc_each(client, stub_method(method), request, callback, timeout)
-
-      {result, %{method: method, kind: :stream_each}}
-    end)
-  end
-
-  def stream_reduce(client, method, request, acc, reducer, timeout \\ :infinity)
-      when is_atom(method) do
-    :telemetry.span([:modal, :rpc], %{method: method, kind: :stream_reduce}, fn ->
-      result =
-        client_impl().stream_rpc_reduce(
-          client,
-          stub_method(method),
-          request,
-          acc,
-          reducer,
-          timeout
-        )
-
-      {result, %{method: method, kind: :stream_reduce}}
-    end)
-  end
-
-  defp client_impl, do: Application.get_env(:modal, :client_impl, Modal.Client)
-
+  # Maps domain-level RPC names (PascalCase atoms matching the proto service
+  # definition) to the snake_case function names on the generated gRPC stub.
+  # Each mapping generates a compile-time function clause, so a typo in a
+  # caller's method atom produces a clear FunctionClauseError, not a runtime
+  # Map.fetch! crash.
   @methods %{
     AppGetOrCreate: :app_get_or_create,
     AuthTokenGet: :auth_token_get,
@@ -73,5 +36,49 @@ defmodule Modal.RPC do
     WorkspaceBillingReport: :workspace_billing_report
   }
 
-  defp stub_method(method), do: Map.fetch!(@methods, method)
+  @type method :: unquote(Enum.reduce(Map.keys(@methods), &{:|, [], [&1, &2]}))
+
+  @spec call(GenServer.server(), method(), struct(), timeout()) ::
+          {:ok, struct()} | {:error, term()}
+  def call(client, method, request, timeout \\ 30_000) do
+    :telemetry.span([:modal, :rpc], %{method: method, kind: :unary}, fn ->
+      result = client_impl().rpc(client, stub_method(method), request, timeout)
+      {result, %{method: method, kind: :unary}}
+    end)
+  end
+
+  @spec stream(GenServer.server(), method(), struct(), timeout()) ::
+          {:ok, [struct()]} | {:error, term()}
+  def stream(client, method, request, timeout \\ 60_000) do
+    :telemetry.span([:modal, :rpc], %{method: method, kind: :stream}, fn ->
+      result = client_impl().stream_rpc(client, stub_method(method), request, timeout)
+      {result, %{method: method, kind: :stream}}
+    end)
+  end
+
+  @spec stream_reduce(GenServer.server(), method(), struct(), acc, reducer, timeout()) ::
+          {:ok, acc} | {:error, term()}
+        when acc: term(), reducer: (struct(), acc -> {:cont, acc} | {:halt, acc})
+  def stream_reduce(client, method, request, acc, reducer, timeout \\ :infinity) do
+    :telemetry.span([:modal, :rpc], %{method: method, kind: :stream_reduce}, fn ->
+      result =
+        client_impl().stream_rpc_reduce(
+          client,
+          stub_method(method),
+          request,
+          acc,
+          reducer,
+          timeout
+        )
+
+      {result, %{method: method, kind: :stream_reduce}}
+    end)
+  end
+
+  @client_impl Application.compile_env(:modal, :client_impl, Modal.Client)
+  defp client_impl, do: @client_impl
+
+  for {domain, stub} <- @methods do
+    defp stub_method(unquote(domain)), do: unquote(stub)
+  end
 end

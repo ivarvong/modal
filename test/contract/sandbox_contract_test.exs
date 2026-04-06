@@ -11,11 +11,12 @@ defmodule Modal.Contract.SandboxTest do
     - rpc(:sandbox_terminate, ...) → {:ok, %SandboxTerminateResponse{}}
   """
   use ExUnit.Case, async: false
+  alias Modal.Contract.Support
   @moduletag :contract
   @moduletag timeout: 60_000
 
   setup_all do
-    client = Modal.Contract.Support.client!()
+    client = Support.client!()
     {:ok, app_id} = Modal.App.lookup(client, "elixir-contract-test")
 
     {:ok, image_id, _} =

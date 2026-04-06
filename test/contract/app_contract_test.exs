@@ -6,10 +6,11 @@ defmodule Modal.Contract.AppTest do
     - rpc(:app_get_or_create, ...) → {:ok, %Modal.Client.AppGetOrCreateResponse{app_id: "ap-..."}}
   """
   use ExUnit.Case, async: false
+  alias Modal.Contract.Support
   @moduletag :contract
 
   setup_all do
-    %{client: Modal.Contract.Support.client!()}
+    %{client: Support.client!()}
   end
 
   test "App.lookup returns {:ok, app_id} where app_id is a string starting with 'ap-'",

@@ -15,13 +15,13 @@ defmodule Modal.Sandbox do
 
   defstruct [:id, :client, :task_id]
 
-  @type t :: %__MODULE__{
-          id: String.t(),
-          client: GenServer.server(),
-          # Populated after the first get_task_id/1 call. Pass the returned
-          # sandbox value to subsequent operations to avoid repeat RPCs.
-          task_id: String.t() | nil
-        }
+  @opaque t :: %__MODULE__{
+            id: String.t(),
+            client: GenServer.server(),
+            # Populated after the first get_task_id/1 call. Pass the returned
+            # sandbox value to subsequent operations to avoid repeat RPCs.
+            task_id: String.t() | nil
+          }
 
   # GRPC status code 4 = DEADLINE_EXCEEDED — how SandboxWait(timeout: 0)
   # signals "still running" rather than an actual error.
@@ -289,6 +289,7 @@ defmodule Modal.Sandbox do
   # ── Snapshots ───────────────────────────────────────────────────
 
   @doc "Snapshot a running sandbox (full VM). Returns `{:ok, snapshot_id}`."
+  @spec snapshot(t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def snapshot(%__MODULE__{} = sb, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 55.0)
 
@@ -310,6 +311,7 @@ defmodule Modal.Sandbox do
   end
 
   @doc "Restore from snapshot."
+  @spec restore(GenServer.server(), String.t()) :: {:ok, t()} | {:error, term()}
   def restore(client, snapshot_id) do
     request = %Modal.Client.SandboxRestoreRequest{snapshot_id: snapshot_id}
 
@@ -319,6 +321,7 @@ defmodule Modal.Sandbox do
   end
 
   @doc "Snapshot filesystem as a reusable image. Returns `{:ok, image_id}`."
+  @spec snapshot_filesystem(t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def snapshot_filesystem(%__MODULE__{} = sb, opts \\ []) do
     request = %Modal.Client.SandboxSnapshotFsRequest{
       sandbox_id: sb.id,
@@ -407,6 +410,14 @@ defmodule Modal.Sandbox do
     case opts[:regions] do
       nil -> nil
       regions when is_list(regions) -> %Modal.Client.SchedulerPlacement{regions: regions}
+    end
+  end
+
+  # ── Inspect — show only sandbox ID, redact client ───────────────
+
+  defimpl Inspect do
+    def inspect(%Modal.Sandbox{} = sb, _opts) do
+      "#Modal.Sandbox<id: #{sb.id}>"
     end
   end
 end

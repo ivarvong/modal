@@ -11,13 +11,14 @@ defmodule Modal.Contract.ImageTest do
     - TaskLogs has field: data (not :message — a past bug)
   """
   use ExUnit.Case, async: false
+  alias Modal.Contract.Support
   @moduletag :contract
   @moduletag timeout: 300_000
 
   @dockerfile ["FROM python:3.12-slim"]
 
   setup_all do
-    client = Modal.Contract.Support.client!()
+    client = Support.client!()
     {:ok, app_id} = Modal.App.lookup(client, "elixir-contract-test")
     %{client: client, app_id: app_id}
   end
