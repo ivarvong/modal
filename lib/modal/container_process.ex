@@ -66,6 +66,25 @@ defmodule Modal.ContainerProcess do
 
       tcr = Keyword.get(opts, :tcr_stub)
 
+      pty_info =
+        case Keyword.get(opts, :pty, false) do
+          false ->
+            nil
+
+          true ->
+            %Modal.Client.PTYInfo{
+              enabled: true,
+              winsz_rows: 24,
+              winsz_cols: 80,
+              env_term: "xterm-256color",
+              pty_type: :PTY_TYPE_SHELL,
+              no_terminate_on_idle_stdin: true
+            }
+
+          %Modal.Client.PTYInfo{} = info ->
+            info
+        end
+
       request = %TCR.TaskExecStartRequest{
         task_id: task_id,
         exec_id: exec_id,
@@ -73,7 +92,8 @@ defmodule Modal.ContainerProcess do
         stdout_config: :TASK_EXEC_STDOUT_CONFIG_PIPE,
         stderr_config: :TASK_EXEC_STDERR_CONFIG_PIPE,
         timeout_secs: Keyword.get(opts, :timeout_secs, 300),
-        workdir: Keyword.get(opts, :workdir, "")
+        workdir: Keyword.get(opts, :workdir, ""),
+        pty_info: pty_info
       }
 
       stub = tcr || @default_tcr_stub

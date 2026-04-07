@@ -22,6 +22,9 @@ mix modal.calc               # 10 random math expressions against a warm sandbox
 mix modal.demo               # clone, compile, snapshot, restore, test
 mix modal.screenshot URL     # headless Chromium screenshot
 mix modal.clip URL --end 30  # ffmpeg clip + resize to 720p
+
+export ANTHROPIC_API_KEY=sk-ant-...
+mix modal.claude "fix the typo in the README"  # Claude Code on a ticket
 ```
 
 ## Files
@@ -33,4 +36,5 @@ mix modal.clip URL --end 30  # ffmpeg clip + resize to 720p
 | `modal.demo.ex` | Full workflow: clone, install, snapshot, restore, test |
 | `modal.screenshot.ex` | Screenshot a URL with headless Chromium on Modal |
 | `modal.clip.ex` | Clip + resize a video to 720p via ffmpeg on Modal |
+| `modal.claude.ex` | Run Claude Code headless on a ticket inside a sandbox |
 | `mix_helpers.ex` | Shared helpers (credentials, timing, formatting) |

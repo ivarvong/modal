@@ -32,6 +32,7 @@ defmodule Modal.RPC do
     SandboxTerminate: :sandbox_terminate,
     SandboxWait: :sandbox_wait,
     SandboxWaitUntilReady: :sandbox_wait_until_ready,
+    SecretGetOrCreate: :secret_get_or_create,
     TaskGetCommandRouterAccess: :task_get_command_router_access,
     WorkspaceBillingReport: :workspace_billing_report
   }
