@@ -6,7 +6,7 @@ defmodule Modal.ImageTest do
   setup :verify_on_exit!
 
   @client :mock
-  @dockerfile ["FROM python:3.12-slim"]
+  @dockerfile ["FROM python:3.14-slim"]
   @image_id "im-abc123"
 
   defp stub_get_or_create do
@@ -34,7 +34,7 @@ defmodule Modal.ImageTest do
 
       Modal.Client.Mock
       |> expect(:stream_rpc, fn @client, :image_join_streaming, _req, _timeout ->
-        log = %Modal.Client.TaskLogs{data: "Step 1/3 : FROM python:3.12-slim"}
+        log = %Modal.Client.TaskLogs{data: "Step 1/3 : FROM python:3.14-slim"}
         {:ok, [%Modal.Client.ImageJoinStreamingResponse{task_logs: [log]}]}
       end)
 

@@ -27,7 +27,7 @@ defmodule Mix.Tasks.Modal.Calc do
     {:ok, app_id} = Modal.App.lookup(client, @app_name)
 
     {:ok, image_id, _} =
-      Modal.Image.get_or_create(client, ["FROM python:3.12-slim"], app_id: app_id)
+      Modal.Image.get_or_create(client, ["FROM python:3.14-slim"], app_id: app_id)
 
     sandbox = find_or_create(client, app_id, image_id)
 

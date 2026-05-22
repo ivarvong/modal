@@ -22,7 +22,7 @@ defmodule ModalTest do
 
     # get_or_create returns a 3-tuple: {:ok, image_id, :cached | :built}
     {:ok, image_id, _status} =
-      Modal.Image.get_or_create(client, ["FROM python:3.12-slim-bookworm"], app_id: app_id)
+      Modal.Image.get_or_create(client, ["FROM python:3.14-slim-bookworm"], app_id: app_id)
 
     sandbox =
       Modal.Sandbox.create!(client,

@@ -15,7 +15,7 @@ defmodule Modal.Contract.ImageTest do
   @moduletag :contract
   @moduletag timeout: 300_000
 
-  @dockerfile ["FROM python:3.12-slim"]
+  @dockerfile ["FROM python:3.14-slim"]
 
   setup_all do
     client = Support.client!()

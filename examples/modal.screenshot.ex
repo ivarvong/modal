@@ -31,7 +31,7 @@ defmodule Mix.Tasks.Modal.Screenshot do
   @mem_cost_per_gib_sec 0.00000222
 
   @dockerfile [
-    "FROM python:3.12-slim",
+    "FROM python:3.14-slim",
     "RUN pip install --no-cache-dir playwright",
     "RUN playwright install chromium --with-deps"
   ]

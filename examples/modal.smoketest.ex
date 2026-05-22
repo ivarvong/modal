@@ -15,7 +15,7 @@ defmodule Mix.Tasks.Modal.Smoketest do
     {:ok, app_id} = Modal.App.lookup(client, "elixir-smoketest")
 
     {:ok, image_id, _status} =
-      Modal.Image.get_or_create(client, ["FROM python:3.12-slim-bookworm"], app_id: app_id)
+      Modal.Image.get_or_create(client, ["FROM python:3.14-slim-bookworm"], app_id: app_id)
 
     Mix.shell().info("Image: #{image_id}")
 

@@ -24,7 +24,7 @@ end
 )
 
 {:ok, app_id} = Modal.App.lookup(client, "my-app")
-{:ok, image_id, _status} = Modal.Image.get_or_create(client, ["FROM python:3.12-slim"])
+{:ok, image_id, _status} = Modal.Image.get_or_create(client, ["FROM python:3.14-slim"])
 
 sandbox = Modal.Sandbox.create!(client,
   app_id: app_id,
