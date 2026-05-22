@@ -17,11 +17,13 @@ Then:
 ```bash
 source .env  # MODAL_TOKEN_ID and MODAL_TOKEN_SECRET
 
-mix modal.smoketest          # basic sandbox + Python exec
-mix modal.calc               # 10 random math expressions against a warm sandbox
-mix modal.demo               # clone, compile, snapshot, restore, test
-mix modal.screenshot URL     # headless Chromium screenshot
-mix modal.clip URL --end 30  # ffmpeg clip + resize to 720p
+mix modal.smoketest             # basic sandbox + Python exec
+mix modal.calc                  # 10 random math expressions against a warm sandbox
+mix modal.demo                  # clone, compile, snapshot, restore, test
+mix modal.eval prepare REPO     # build (and cache) a per-repo test image
+mix modal.eval run REPO         # boot from the cached image, git pull, mix test
+mix modal.screenshot URL        # headless Chromium screenshot
+mix modal.clip URL --end 30     # ffmpeg clip + resize to 720p
 
 export ANTHROPIC_API_KEY=sk-ant-...
 mix modal.claude "fix the typo in the README"  # Claude Code on a ticket
@@ -34,6 +36,7 @@ mix modal.claude "fix the typo in the README"  # Claude Code on a ticket
 | `modal.smoketest.ex` | Create a sandbox, run Python, print the result |
 | `modal.calc.ex` | 10 random math ops against a warm Python sandbox |
 | `modal.demo.ex` | Full workflow: clone, install, snapshot, restore, test |
+| `modal.eval.ex` | Two-phase eval: cache an image (`prepare`), boot + run tests (`run`) |
 | `modal.screenshot.ex` | Screenshot a URL with headless Chromium on Modal |
 | `modal.clip.ex` | Clip + resize a video to 720p via ffmpeg on Modal |
 | `modal.claude.ex` | Run Claude Code headless on a ticket inside a sandbox |
