@@ -34,3 +34,6 @@ modal-*.tar
 
 # Reference repo
 /modal-client/
+
+# Dialyzer PLT files
+/priv/plts/

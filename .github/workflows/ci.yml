@@ -38,6 +38,15 @@ jobs:
       - run: mix format --check-formatted
       - run: mix credo
 
+      - name: Cache dialyzer PLT
+        uses: actions/cache@v4
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-plt-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-
+      - run: mix dialyzer --format github
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest

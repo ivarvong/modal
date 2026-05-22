@@ -3,6 +3,7 @@ defmodule Modal.MixProject do
 
   @version "0.1.0"
   @source_url "https://github.com/ivarvong/modal"
+  @description "Elixir client for Modal sandboxes: gRPC-native, streaming exec, snapshot/restore, filesystem I/O."
 
   def project do
     [
@@ -15,8 +16,9 @@ defmodule Modal.MixProject do
       deps: deps(),
       dialyzer: dialyzer(),
       name: "Modal",
-      description: "Elixir client for the Modal.com API",
+      description: @description,
       source_url: @source_url,
+      homepage_url: @source_url,
       package: package(),
       docs: docs()
     ]
@@ -48,22 +50,44 @@ defmodule Modal.MixProject do
 
   defp dialyzer do
     [
-      plt_add_apps: [:mix]
+      plt_add_apps: [:mix],
+      plt_local_path: "priv/plts/local.plt",
+      plt_core_path: "priv/plts/core.plt"
     ]
   end
 
   defp package do
     [
+      maintainers: ["Ivar Vong"],
       licenses: ["MIT"],
-      links: %{"GitHub" => @source_url},
-      files: ~w(lib mix.exs README.md LICENSE NOTICE .formatter.exs)
+      links: %{
+        "GitHub" => @source_url,
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
+      },
+      files: ~w(lib mix.exs README.md LICENSE NOTICE CHANGELOG.md .formatter.exs)
     ]
   end
 
   defp docs do
     [
-      main: "Modal",
-      extras: ["README.md"]
+      main: "readme",
+      source_ref: "v#{@version}",
+      extras: [
+        "README.md",
+        "CHANGELOG.md",
+        "examples/README.md": [title: "Examples"]
+      ],
+      groups_for_modules: [
+        "Public API": [
+          Modal,
+          Modal.Client,
+          Modal.App,
+          Modal.Image,
+          Modal.Sandbox,
+          Modal.ContainerProcess,
+          Modal.Filesystem
+        ]
+      ]
     ]
   end
 end

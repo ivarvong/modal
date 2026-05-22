@@ -222,7 +222,7 @@ defmodule Mix.Tasks.Modal.Claude do
     {:ok, result} = Modal.ContainerProcess.await(proc)
     Modal.ContainerProcess.close(proc)
 
-    if String.trim(result.stdout || "") != "" do
+    if String.trim(result.stdout) != "" do
       result.stdout |> String.trim() |> String.split("\n") |> Enum.each(&info("  #{&1}"))
     end
 

@@ -15,13 +15,13 @@ defmodule Modal.Sandbox do
 
   defstruct [:id, :client, :task_id]
 
-  @opaque t :: %__MODULE__{
-            id: String.t(),
-            client: GenServer.server(),
-            # Populated after the first get_task_id/1 call. Pass the returned
-            # sandbox value to subsequent operations to avoid repeat RPCs.
-            task_id: String.t() | nil
-          }
+  @type t :: %__MODULE__{
+          id: String.t(),
+          client: GenServer.server(),
+          # Populated after the first get_task_id/1 call. Pass the returned
+          # sandbox value to subsequent operations to avoid repeat RPCs.
+          task_id: String.t() | nil
+        }
 
   # GRPC status code 4 = DEADLINE_EXCEEDED — how SandboxWait(timeout: 0)
   # signals "still running" rather than an actual error.
