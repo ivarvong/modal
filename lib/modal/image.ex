@@ -37,11 +37,11 @@ defmodule Modal.Image do
   defp await_build(client, image_id) do
     request = %Modal.Client.ImageJoinStreamingRequest{
       image_id: image_id,
-      timeout: 600.0,
+      timeout: 1800.0,
       include_logs_for_finished: false
     }
 
-    case RPC.stream(client, :ImageJoinStreaming, request, 620_000) do
+    case RPC.stream(client, :ImageJoinStreaming, request, 1_820_000) do
       {:ok, responses} ->
         failure =
           Enum.find(responses, fn resp ->
