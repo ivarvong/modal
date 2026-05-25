@@ -437,12 +437,13 @@ The library ships with behaviours so it can be mocked via [Mox](https://hex.pm/p
 
 Point `:modal, :client_impl` at your mock in `config/test.exs` and unit-test
 without ever opening a socket. The
-[`test/`](https://github.com/ivarvong/modal/tree/main/test) tree has **551
-tests + 26 property-based tests** total (Pickle round-trip + byte-equality
-vs CPython, JWT parsing, filesystem option coercion, Sandbox option
-building, integer bignum overflow, repeated-string memoization). Of those,
-**36 are live contract tests** (`@moduletag :contract`, `test/contract/`)
-that drive real RPCs against Modal to validate the mocks against the wire.
+[`test/`](https://github.com/ivarvong/modal/tree/main/test) tree is all-Mox
+by default (no socket), plus property-based tests (Pickle round-trip +
+byte-equality vs CPython, JWT parsing, filesystem option coercion, Sandbox
+option building, integer bignum overflow, repeated-string memoization). A
+separate tier of **live contract tests** (`@moduletag :contract`,
+`test/contract/`) drives real RPCs against Modal to validate the mocks
+against the wire.
 
 Run contract tests with:
 
@@ -456,8 +457,8 @@ indistinguishable from "tests didn't verify anything." Tests cover
 invoke / spawn / await + generator stream), **Cls** (deploy + method
 dispatch + lifecycle), **Pickle** cross-runtime via CPython,
 **Proxy**, **network_access** (open / blocked / CIDR allowlist with
-real `curl`-in-sandbox behavior verification) — 36 tests, ~3:30
-end-to-end against a warm account.
+real `curl`-in-sandbox behavior verification) — ~3:30 end-to-end
+against a warm account.
 
 ## Roadmap
 
@@ -477,17 +478,20 @@ Tracked but not yet landed:
   works today; spawn_map would batch the wire call.
 - `Modal.Cls` warm-restore / GPU snapshots — newer Modal Python features
   for fast container resume.
+- Blob-backed Function results. Modal stores large outputs (above a size
+  threshold) in blob storage and returns a `blob_id` instead of inline
+  bytes; fetching them needs a separate download path that isn't
+  implemented yet. `Modal.Function.await/2` surfaces such a result as a
+  clear `:function_failed` error rather than hanging or returning garbage.
 
 Open an issue if any of these would unblock you, or to discuss other gaps.
 
 ## Audit trail
 
-The numbers in this README are pinned against actual test runs:
+The verifiable claims in this README are pinned against actual test runs
+(test *counts* are deliberately left out — they're noisy under parametrized
+tests and drift; `Modal.ReadmeClaimsTest` audits the structural claims):
 
-- "551 tests + 26 property tests" — `mix test` count
-  (515 run by default + 36 contract excluded behind `:contract` tag)
-- "36 contract tests, ~3:30" — `mix modal.contract` count + wall time
-  on the author's account (US East against `us-east` Modal)
 - "Modal.Pickle is byte-equivalent to `pickle.dumps(v, protocol=4)`" —
   `test/modal/properties/pickle_property_test.exs` `BYTE EQUALITY`
   property runs `pickle.dumps` via `python3` and compares bytes

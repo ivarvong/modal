@@ -27,15 +27,22 @@ defmodule Modal.Dict do
   Python's `modal.Dict` cloudpickles values by default — that's
   unreadable from Elixir. To stay cross-language-friendly:
 
-    * **Default behavior (recommended)**: this module Jason-encodes
-      values on `put/3` and Jason-decodes on `get/2`. Maps, lists,
-      strings, numbers, booleans, nil round-trip cleanly to/from
-      Python via `json.dumps` / `json.loads`.
+    * **`encoding: :json` (default, recommended)**: this module
+      Jason-encodes values on `put/3` and Jason-decodes on `get/2`.
+      Maps, lists, strings, numbers, booleans, nil round-trip cleanly
+      to/from Python via `json.dumps` / `json.loads`.
+    * **`encoding: :pickle`**: match Python's native `modal.Dict`
+      default. Values are encoded with `Modal.Pickle` (protocol 4,
+      byte-equivalent to CPython's `pickle.dumps`) and keys are
+      pickle-encoded too — so a Python `d[key]` / `d.get(key)` finds
+      entries this library wrote, and vice versa, with no `json` shim
+      on the Python side.
     * **`encoding: :raw`**: opt-out for when you've got bytes already
       (a serialized protobuf, a binary blob). You handle encoding;
       we just pass bytes through.
 
-  Keys are always UTF-8 bytes — pass any string.
+  Keys under `:json` / `:raw` are sent as UTF-8 bytes; under `:pickle`
+  they are pickle-encoded to match Python's lookup. Pass any string.
 
   ## Quick start
 
