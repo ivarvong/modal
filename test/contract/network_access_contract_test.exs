@@ -22,7 +22,7 @@ defmodule Modal.Contract.NetworkAccessTest do
 
   setup_all do
     client = Support.client!()
-    {:ok, app} = Modal.App.lookup(client, "elixir-contract-test")
+    {:ok, app} = Modal.App.lookup(client, Support.app_name())
 
     # An image with curl. Reused via Modal's image cache.
     {:ok, image_id, _} =

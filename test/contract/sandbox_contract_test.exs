@@ -25,7 +25,7 @@ defmodule Modal.Contract.SandboxTest do
 
   setup_all do
     client = Support.client!()
-    {:ok, app} = Modal.App.lookup(client, "elixir-contract-test")
+    {:ok, app} = Modal.App.lookup(client, Support.app_name())
 
     {:ok, image_id, _} =
       Modal.Image.get_or_create(client, ["FROM python:3.14-slim"], app: app)

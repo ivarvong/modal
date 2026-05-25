@@ -34,7 +34,7 @@ defmodule Modal.Contract.PickleTest do
     case System.cmd(@python_bin, ["-c", "import modal; print('ok')"], stderr_to_stdout: true) do
       {"ok\n", 0} ->
         client = Support.client!()
-        {:ok, app} = Modal.App.lookup(client, "elixir-contract-test")
+        {:ok, app} = Modal.App.lookup(client, Support.app_name())
         %{client: client, app: app}
 
       _ ->
