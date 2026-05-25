@@ -1,0 +1,48 @@
+# The directory Mix will write compiled artifacts to.
+/_build/
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# The directory Mix downloads your dependencies sources to.
+/deps/
+
+# Where third-party dependencies like ExDoc output generated docs.
+/doc/
+
+# Ignore .fetch files in case you like to edit your project deps locally.
+/.fetch
+
+# If the VM crashes, it generates a dump, let's ignore it too.
+erl_crash.dump
+
+# Also ignore archive artifacts (built via "mix archive.build").
+*.ez
+
+# Ignore package tarball (built via "mix hex.build").
+modal-*.tar
+
+# Temporary files, for example, from tests.
+/tmp/
+
+# Environment / secrets
+.env
+
+# One-off output artifacts from demo scripts (scoped — don't blanket-ignore
+# media types or future legitimate assets get silently swallowed).
+/clip.mp4
+/screenshot.png
+
+# Reference repo (Modal's upstream client, vendored locally for cross-ref)
+/modal-client/
+
+# IDE / editor artifacts
+/.elixir_ls/
+/.lexical/
+*.beam
+
+# Claude Code per-session state
+/.claude/
+
+# Dialyzer PLT files
+/priv/plts/

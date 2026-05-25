@@ -1,0 +1,51 @@
+name: Release
+
+# Triggered when a `vX.Y.Z` tag is pushed — publishes to Hex.
+# The tag must match @version in mix.exs.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run (build + docs only, skip publish)"
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    name: Publish to Hex
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.17.3"
+          otp-version: "27.1"
+
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+      - run: mix docs
+
+      - name: Verify @version matches the tag
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/v}"
+          version=$(grep -E '^\s*@version\s*"' mix.exs | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match mix.exs @version $version"
+            exit 1
+          fi
+          echo "Tag and @version both: $version"
+
+      - name: Publish to Hex
+        if: github.event_name == 'push' || inputs.dry_run == false
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: mix hex.publish --yes

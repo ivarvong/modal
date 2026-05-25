@@ -1,0 +1,177 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - "NOTICE"
+      - ".gitignore"
+      - "CONTRIBUTING.md"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - "NOTICE"
+      - ".gitignore"
+      - "CONTRIBUTING.md"
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same ref when a new commit arrives —
+# Modal billing is per-second and we don't want overlapping sandboxes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MIX_ENV: test
+
+jobs:
+  build:
+    name: Build & Check (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.19.5"
+            otp: "28.4"
+          - elixir: "1.18.4"
+            otp: "27.3"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
+
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix format --check-formatted
+      - run: mix credo --strict
+      - run: mix test
+      # ex_doc is `only: :dev`, and the job runs under MIX_ENV=test;
+      # override just for this step so the docs task is available.
+      - name: Build docs
+        env:
+          MIX_ENV: dev
+        run: mix deps.get && mix docs
+
+  dialyzer:
+    name: Dialyzer
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.4"
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-28.4-1.19.5-${{ hashFiles('mix.lock') }}
+
+      - run: mix deps.get
+      - run: mix compile
+
+      - name: Cache dialyzer PLT
+        uses: actions/cache@v4
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-plt-28.4-1.19.5-${{ hashFiles('mix.lock') }}
+
+      - run: mix dialyzer --format github
+
+  contract:
+    name: Live contract suite (real Modal)
+    runs-on: ubuntu-latest
+
+    # Run only when we have access to maintainer secrets:
+    #   - on push to main of the canonical repo
+    #   - on PRs originating from the canonical repo (not forks)
+    #   - on explicit workflow_dispatch
+    # Forks never touch live Modal — no billing surprises, no leaked
+    # credentials in CI logs.
+    if: |
+      (github.event_name == 'push' && github.repository == 'ivarvong/modal') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      github.event_name == 'workflow_dispatch'
+
+    # Wall time on the author's machine is ~3:30 against a warm Modal
+    # account. CI cold starts add latency to image builds + container
+    # boots; 15 min is generous headroom that still caps runaway billing.
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.4"
+
+      - name: Cache mix deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-28.4-1.19.5-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-28.4-1.19.5-
+
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+
+      # Python + modal SDK are needed for the cross-runtime Pickle
+      # contract test. Without them, pickle_contract_test silently
+      # skips its three live tests (Elixir→Python, Python→Elixir,
+      # Dict-key byte-equality) — the rest of the contract suite
+      # still runs but we'd lose the cross-runtime coverage.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip + modal SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-modal-${{ hashFiles('.github/workflows/ci.yml') }}
+
+      - name: Install modal SDK in a venv
+        run: |
+          python3 -m venv /tmp/modal-py-venv
+          /tmp/modal-py-venv/bin/pip install --quiet --upgrade pip
+          /tmp/modal-py-venv/bin/pip install --quiet modal
+
+      - name: Run contract suite against live Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          # pickle_contract_test reads this; default matches what the
+          # "Install modal SDK in a venv" step creates above.
+          PYTHON_BIN: /tmp/modal-py-venv/bin/python3
+        # `mix modal.contract` refuses to start without credentials,
+        # so a misconfigured secret rotation surfaces immediately
+        # (instead of silently no-op'ing as a clean exit).
+        run: mix modal.contract

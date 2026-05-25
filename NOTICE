@@ -1,0 +1,9 @@
+This project includes code generated from Protocol Buffer definitions
+originally authored by Modal Labs and distributed under the Apache License 2.0.
+
+Source: https://github.com/modal-labs/modal-client
+License: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+
+The generated files are located at:
+  lib/modal/proto/modal_proto/api.pb.ex
+  lib/modal/proto/modal_proto/task_command_router.pb.ex
