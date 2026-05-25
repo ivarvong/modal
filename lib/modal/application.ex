@@ -20,6 +20,12 @@ defmodule Modal.Application do
   # supervision tree, started once by the BEAM at app boot, and is owned
   # by no individual Modal.Client. Every client adds and removes channels
   # under it; clients come and go, the supervisor stays.
+  #
+  # It also owns `Modal.WatchdogSupervisor`, a Task.Supervisor for the
+  # caller-exit monitor processes (see `Modal.Sandbox` and
+  # `Modal.ContainerProcess`). Same rationale as above: those monitors
+  # must outlive the Modal.Client that spawned them, and a crash in one
+  # should be reported, not silent.
 
   use Application
 
@@ -30,7 +36,18 @@ defmodule Modal.Application do
       # library. Registering it ourselves under a one_for_one means any
       # transient supervisor crash recovers without taking down the
       # client GenServers, which are siblings.
-      {DynamicSupervisor, strategy: :one_for_one, name: GRPC.Client.Supervisor}
+      {DynamicSupervisor, strategy: :one_for_one, name: GRPC.Client.Supervisor},
+
+      # Owns the caller-exit watchdog processes — the per-sandbox monitor
+      # that fires `SandboxTerminate` when the calling pid dies, and the
+      # per-exec channel monitor in `Modal.ContainerProcess`. These used
+      # to be bare `spawn/1`s; under a Task.Supervisor a crash in a
+      # monitor (which would otherwise silently leave the very leak it
+      # exists to prevent) is reported through the logger like any other
+      # task. Tasks default to `:temporary` restart — correct here, since
+      # each monitor is bound to one caller pid and restarting it with a
+      # stale ref would be wrong; let it stay dead.
+      {Task.Supervisor, name: Modal.WatchdogSupervisor}
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: Modal.Supervisor)

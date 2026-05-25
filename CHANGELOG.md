@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `Modal.Sandbox.run/2` now arms the caller-exit watchdog
+  (`terminate_on_caller_exit: :silent` by default), so a brutal
+  `Process.exit(caller, :kill)` mid-run — which skips the `try/after`
+  cleanup — no longer leaks the sandbox. Pass
+  `terminate_on_caller_exit: false` to opt out.
+
+### Changed
+
+- Caller-exit monitor processes (`Modal.Sandbox`, `Modal.ContainerProcess`)
+  now run under a supervised `Task.Supervisor` (`Modal.WatchdogSupervisor`)
+  instead of a bare `spawn/1`, so a crash in a monitor is reported rather
+  than silently dropping the cleanup it was responsible for.
+
 ## [0.1.0]
 
 Initial preview release. Elixir client covering most of Modal's

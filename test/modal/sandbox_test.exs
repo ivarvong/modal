@@ -838,6 +838,94 @@ defmodule Modal.SandboxTest do
         cmd: ["bash", "-c", "echo hi"]
       )
     end
+
+    test "arms the caller-exit watchdog by default — terminates on a hard caller kill" do
+      # run/2's `try/after` cleanup is skipped by a brutal kill, so run/2
+      # also defaults `:terminate_on_caller_exit` to `:silent`. Park the
+      # caller in the `SandboxGetTaskId` RPC (reached after create has
+      # armed the watchdog), kill it, and assert the watchdog still fires
+      # `SandboxTerminate`. The watchdog runs under Modal.WatchdogSupervisor
+      # and reaches the mock via its `$callers` chain back to the caller.
+      parent = self()
+
+      Modal.Client.Mock
+      |> expect(:rpc, fn @client, :sandbox_create, _req, _timeout ->
+        {:ok, %Modal.Client.SandboxCreateResponse{sandbox_id: @sandbox_id}}
+      end)
+      |> expect(:rpc, fn @client, :sandbox_get_task_id, _req, _timeout ->
+        # create/2 has returned and the watchdog is armed. Park here
+        # (mid-run, before the `after` cleanup) until the caller is killed.
+        send(parent, :parked)
+
+        receive do
+          :never -> :ok
+        end
+      end)
+      |> expect(:rpc, fn @client, :sandbox_terminate, req, _timeout ->
+        assert req.sandbox_id == @sandbox_id
+        send(parent, :auto_terminated)
+        {:ok, %Modal.Client.SandboxTerminateResponse{}}
+      end)
+
+      caller =
+        spawn(fn ->
+          receive do
+            :proceed -> :ok
+          end
+
+          Modal.Sandbox.run(@client, app_id: "ap-test", image_id: "im-test", cmd: ["true"])
+        end)
+
+      Mox.allow(Modal.Client.Mock, self(), caller)
+      send(caller, :proceed)
+
+      assert_receive :parked, 1000
+      Process.exit(caller, :kill)
+      assert_receive :auto_terminated, 1000
+    end
+
+    test "terminate_on_caller_exit: false opts out — a hard kill leaks (no watchdog)" do
+      parent = self()
+
+      Modal.Client.Mock
+      |> expect(:rpc, fn @client, :sandbox_create, _req, _timeout ->
+        {:ok, %Modal.Client.SandboxCreateResponse{sandbox_id: @sandbox_id}}
+      end)
+      |> expect(:rpc, fn @client, :sandbox_get_task_id, _req, _timeout ->
+        send(parent, :parked)
+
+        receive do
+          :never -> :ok
+        end
+      end)
+      # Signal if terminate ever fires. With the watchdog disabled it must
+      # not — the refute below catches a wrongly-armed watchdog.
+      |> stub(:rpc, fn @client, :sandbox_terminate, _req, _timeout ->
+        send(parent, :auto_terminated)
+        {:ok, %Modal.Client.SandboxTerminateResponse{}}
+      end)
+
+      caller =
+        spawn(fn ->
+          receive do
+            :proceed -> :ok
+          end
+
+          Modal.Sandbox.run(@client,
+            app_id: "ap-test",
+            image_id: "im-test",
+            cmd: ["true"],
+            terminate_on_caller_exit: false
+          )
+        end)
+
+      Mox.allow(Modal.Client.Mock, self(), caller)
+      send(caller, :proceed)
+
+      assert_receive :parked, 1000
+      Process.exit(caller, :kill)
+      refute_receive :auto_terminated, 200
+    end
   end
 
   # ── exec_streaming/3 + raise_on_failure!/1 ──────────────────────
