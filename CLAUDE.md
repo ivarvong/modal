@@ -2,49 +2,49 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Repo identity
-
-Elixir client for Modal (modal.com) — sandboxes, autoscaling Functions
-+ Classes, Dict / Queue / Volume / Secret / Tunnel / Proxy /
-CloudBucket, with cross-runtime Python pickle interop. Distributed on
-Hex as `modal`. Public-facing — every change ships through CI on every
-push.
-
-Read `README.md` for the user-facing pitch and `CONTRIBUTING.md` for
-conventions (option validation, error returns, bang variants, telemetry,
-demo scripts). Read `guides/ship_checklist.md` for the operational
-checklist this library was built around — it's the "why" behind a lot
-of the API shape.
+Elixir client for Modal (modal.com) — supervised gRPC client for
+sandboxes, autoscaling Functions + Classes, Dict / Queue / Volume /
+Secret / Tunnel / Proxy / CloudBucket, with cross-runtime Python
+pickle interop. Distributed on Hex as `modal`. **Public-facing,
+critical infrastructure** — every change ships through CI on every
+push and lands via PR. `README.md` is the user-facing pitch;
+`CONTRIBUTING.md` covers option validation, error returns, bang
+variants, and demo scripts; `guides/ship_checklist.md` is the
+operational rationale behind a lot of the API shape.
 
 ## Git workflow: PR-only
 
-All changes land via pull request. Never `git push` directly to `main`,
-and **never** force-push to `main`, even if explicitly authorized in
-conversation — the answer is to open a PR. CI on `main` is the source
-of truth for the published package; push-to-main breaks the property
-that every commit on `main` shipped through a green PR.
-
-After `gh pr create`, always run `open <pr-url>` so the user can review
-in their browser — don't make them copy the URL out of terminal output.
-
-Workflow:
+Never `git push` directly to `main`. Never force-push to `main`, even
+if explicitly authorized in conversation — the answer is to open a PR.
+CI on `main` is the source of truth for the published package.
 
 1. `git switch -c <topic>` off `main`.
-2. Commit on the branch (one logical change per PR — refactor + feature
-   is two PRs).
+2. Commit on the branch (one logical change per PR).
 3. `git push -u origin <topic>`.
-4. `gh pr create` — then `open <url>`.
-5. CI runs the matrix + live contract suite (PRs from this repo, not
-   forks, hit live Modal).
-6. `gh pr merge` once green.
+4. `gh pr create` — then **always** `open <url>` so the user can review.
+5. `gh pr merge` once CI is green.
+
+## Verification gate (run before every PR)
+
+```sh
+mix format --check-formatted && mix credo --strict && mix test \
+  && MIX_ENV=dev mix docs && mix dialyzer
+```
+
+All five gate CI. Running locally first avoids round-trips. For
+contract changes also run `mix modal.contract` (live, ~3:30, needs
+credentials). The contract task deliberately refuses to start without
+`MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` — a silent no-op is
+indistinguishable from "tests didn't verify anything," do not paper
+over that.
 
 ## Toolchain
 
 `.tool-versions` pins **Elixir 1.19.5 / OTP 28.4**. CI matrix also
-runs **1.18.4 / OTP 27.3** for compat; new code must work on both. Keep
-local in sync via asdf or `mise` so formatter / dialyzer output matches
-CI (different patch versions of Elixir reformat differently — bumping
-local without matching what CI runs will produce CI-only format diffs).
+runs **1.18.4 / OTP 27.3** for compat; new code must work on both.
+Keep local in sync via asdf / mise — different patch versions of
+Elixir reformat differently, and a local/CI mismatch produces CI-only
+format diffs.
 
 ## Commands
 
@@ -52,176 +52,140 @@ local without matching what CI runs will produce CI-only format diffs).
 mix test                          # 489 tests + 26 properties, all-Mox, ~6s
 mix test test/path/to_test.exs    # one file
 mix test test/path/to_test.exs:42 # one test by line
-mix test --include integration    # adds @moduletag :integration (live Modal)
-mix test --include contract       # adds @moduletag :contract — but use mix modal.contract instead
-mix modal.contract                # the proper way: refuses to run without
-                                  # MODAL_TOKEN_ID / MODAL_TOKEN_SECRET, ~3:30 live
-
+mix modal.contract                # live, gated on credentials
 mix format                        # auto-fix
-mix format --check-formatted      # CI gate; must pass
-mix credo --strict                # CI gate; must pass
-MIX_ENV=dev mix docs              # ex_doc is dev-only; must emit zero warnings
-mix dialyzer                      # CI gate; first run builds PLT (~2 min)
+mix credo --strict
+MIX_ENV=dev mix docs              # ex_doc is dev-only
+mix dialyzer                      # first run builds PLT ~2 min
 ```
 
-The contract task `mix modal.contract` deliberately refuses to start
-without credentials — a silent no-op would be indistinguishable from
-"tests didn't verify anything." Don't paper over that by hardcoding
-fallback credentials.
+## Architecture rules
 
-## Architecture
+**`Modal.Client` is the unit of isolation.** One GenServer holds one
+gRPC channel + one set of credentials. SaaS pattern is one named
+`Modal.Client` per tenant. Per-client `Task.Supervisor` dispatches
+RPCs concurrently; `:max_concurrency` returns
+`{:error, %Modal.Error{kind: :overloaded}}` when saturated.
 
-### The `Modal.Client` GenServer is the unit of isolation
+**Always route through `Modal.RPC.call/4`** (or `stream/4` /
+`stream_reduce/6`) — never reach `Modal.Client.rpc/4` directly. The
+PascalCase atom in `@methods` at `lib/modal/rpc.ex` gives compile-time
+typo safety, emits `[:modal, :rpc, :*]` telemetry, and applies
+exponential-backoff retry on transient gRPC codes (UNAVAILABLE,
+DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED, ABORTED + network). Adding a
+new RPC = add the atom to `@methods` (additive = minor version bump;
+rename/remove = major).
 
-One `GenServer` holds one gRPC channel + one set of credentials. In
-production it's supervised; in tests it's bypassed entirely via Mox.
-Per-tenant SaaS pattern: one named `Modal.Client` per customer in the
-supervision tree. Per-client `Task.Supervisor` dispatches RPCs
-concurrently so one client serves many requests without head-of-line
-blocking; `:max_concurrency` backpressures with
-`{:error, %Modal.Error{kind: :overloaded}}`.
+**Use `call_no_retry/4` for poll-style RPCs** where DEADLINE_EXCEEDED
+is a domain signal, not a transport failure: `SandboxWait`,
+`SandboxWaitUntilReady`, `FunctionGetOutputs`. Retrying these inflates
+apparent latency and breaks poll semantics.
 
-The library has **three behaviour seams** (`lib/modal/*/behaviour.ex`,
-defined as mocks in `test/test_helper.exs`):
+**Three behaviour seams** (`lib/modal/*/behaviour.ex`, mocks in
+`test/test_helper.exs`):
+- `Modal.Client.Behaviour` — RPC dispatch; tests hook via
+  `config :modal, :client_impl, Modal.Client.Mock`
+- `Modal.ModalStub.Behaviour` — raw gRPC stub (for tests inspecting
+  auth headers / gRPC metadata)
+- `Modal.TaskCommandRouter.Behaviour` — per-exec worker channel
 
-- `Modal.Client.Behaviour` — the RPC dispatch surface (`rpc/4`,
-  `stream/4`). This is where unit tests hook in via
-  `config :modal, :client_impl, Modal.Client.Mock`.
-- `Modal.ModalStub.Behaviour` — the raw gRPC stub. Used by stubs that
-  need to look at gRPC-level metadata (auth headers, etc).
-- `Modal.TaskCommandRouter.Behaviour` — the worker-channel (per-exec
-  TCR endpoint, separate from the control plane).
+**Three test tiers**:
+- `test/modal/*_test.exs` — pure Mox, no socket. Runs by default. Use
+  `Mox.expect/3` (strict) or `Mox.stub/3` (loose, when retry would
+  inflate the expect count).
+- `test/contract/*_contract_test.exs` (`@moduletag :contract`) —
+  drives real RPCs, asserts wire shape matches mocks. Run via
+  `mix modal.contract`.
+- `@moduletag :integration` — heavier live runs; excluded by default.
 
-When adding a new public Modal API call, route through
-`Modal.RPC.call/4` (or `stream/4` / `stream_reduce/6`) — never reach
-straight to `Modal.Client.rpc/4`. Reasons:
+**Telemetry contract**: two families, identical shape —
+`[:modal, :rpc, ...]` (control plane) and `[:modal, :worker_rpc, ...]`
+(per-exec). Stop metadata always includes `:status`; error stops add
+`:error_kind` + `:code`. `:attempt` (0..3) on **both** start and stop
+for retry visibility — when adding a new `call_*` path, include
+`:attempt` in stop metadata manually (telemetry doesn't auto-merge).
 
-1. The PascalCase atom in `@methods` (lib/modal/rpc.ex) gives
-   compile-time-shaped errors for typos (FunctionClauseError, not a
-   runtime stub crash).
-2. You get the `[:modal, :rpc, :*]` telemetry span for free.
-3. Transient gRPC codes (UNAVAILABLE / DEADLINE_EXCEEDED /
-   RESOURCE_EXHAUSTED / ABORTED + network errors) get retried with
-   exponential backoff + jitter via `Modal.Backoff` (up to 3 retries).
+## Wire-shape gotchas (each documented at the call site)
 
-Add the PascalCase atom to `@methods` in `lib/modal/rpc.ex` for any new
-RPC. A new entry is a **minor** version bump (additive); renaming or
-removing one is **major**.
+Read the moduledoc / call-site comment before editing these — they
+encode behaviors Modal's API exposes that can't be inferred from the
+proto alone:
 
-### `call/4` vs `call_no_retry/4` — load-bearing distinction
+- **`Modal.Cls`** — class-function wire name is `<Class>.*` (literal
+  `.*`); AppPublish `function_ids` key has `.*`, `class_ids` does not.
+- **Modal generators** — must use `SYNC_LEGACY` invocation type +
+  `FunctionCallGetDataOut` streaming RPC. ASYNC silently returns `[]`.
+- **`Modal.Volume`** v2 — `VolumeListFiles2` / `VolumeGetFile2` only;
+  legacy returns `INVALID_ARGUMENT`. `reload`/`commit` are
+  worker-only.
+- **`Modal.Proxy`** — dashboard-provisioned only;
+  `ProxyGetOrCreate` returns "Creation method not supported."
+- **`github_cidrs!/1`** — Modal rejects IPv6 in `allowed_cidrs`; the
+  helper filters by default.
 
-`call_no_retry/4` exists because some RPCs use transient gRPC codes
-**as domain signals** — `SandboxWait`, `FunctionGetOutputs`,
-`SandboxWaitUntilReady` use DEADLINE_EXCEEDED to mean "still running."
-Retrying them silently inflates apparent latency and breaks poll
-semantics. If you're wiring a poll-style RPC, use `call_no_retry/4`.
-Same telemetry; the difference is exactly one attempt.
+## Anti-patterns (do not introduce)
 
-### Generated proto code
+- **Don't call `Modal.Client.rpc/4` directly** — always go through
+  `Modal.RPC.call/4` (typo safety + telemetry + retry).
+- **Don't add retries around `call_no_retry/4` callers** — the
+  no-retry choice is load-bearing for the poll-style RPCs above.
+- **Don't edit `lib/modal/proto/**`** — generated from
+  `modal-client/`. Regenerate; never hand-edit.
+- **Don't add a new `Modal.Error` `:kind`** without updating the kind
+  table in `lib/modal/error.ex`'s moduledoc. The table is the contract.
+- **Don't add a new `[:modal, …]` telemetry event family** without
+  discussion — two families is intentional. New RPCs reuse
+  `[:modal, :rpc, *]`.
+- **Don't add backwards-compatibility shims for unreleased changes** —
+  we're pre-1.0. Bump the version and document in `CHANGELOG.md`.
+- **Don't add demo scripts without** adding a row to the README
+  Examples table. `Modal.ReadmeClaimsTest` will fail until you do.
+- **Don't reach for `Process.sleep/1` in tests** — use the
+  `wait_retry_delay: 0` / `rpc_retry_base_ms: 0` test config and Mox
+  to drive timing deterministically.
 
-`lib/modal/proto/modal_proto/api.pb.ex` and
-`lib/modal/proto/modal_proto/task_command_router.pb.ex` are generated
-from `modal-labs/modal-client`. Treat them as read-only — regenerate
-rather than edit. The `modal-client/` directory at repo root is the
-upstream checkout used for codegen.
+## Public-API surface = SemVer contract
 
-### Tests live in three tiers
+These are versioned. Additive = minor, rename / remove / breaking
+shape change = major:
 
-- **Unit (`test/modal/*_test.exs`)** — pure Mox, never opens a socket.
-  Runs by default in `mix test`. Use `Modal.Client.Mock` via
-  `Mox.expect/3` (strict — every expectation must be met) or
-  `Mox.stub/3` (loose — for transient-error propagation tests where the
-  retry would inflate the expect count).
-- **Contract (`test/contract/*_contract_test.exs`,
-  `@moduletag :contract`)** — drives real RPCs against Modal and
-  asserts the wire-format mocks match what Modal actually returns.
-  Catches mock drift before it reaches users. Run with
-  `mix modal.contract` (gated on credentials).
-- **Integration (`@moduletag :integration`)** — heavier live runs;
-  excluded by default.
+- The set of atoms in `Modal.RPC.@methods`
+- The `[:modal, :rpc, *]` and `[:modal, :worker_rpc, *]` event shapes
+  + their metadata keys
+- The `kind:` table in `Modal.Error`
+- Every `@spec`-annotated public function in modules listed under
+  "Public API" in `mix.exs`'s `groups_for_modules`
+- The structs Mox tests pattern-match on
+  (`Modal.Client.<Name>Request/Response`)
 
-Property-based tests live alongside in `test/modal/properties/`. The
-big load-bearing one is `pickle_property_test.exs`'s `BYTE EQUALITY`
-property — shells out to `python3 -c 'pickle.dumps(...)'` and asserts
-byte-identical output. That property is what lets the library claim
-"byte-equivalent to `pickle.dumps(v, protocol=4)`."
-
-The `Modal.ReadmeClaimsTest` (`test/modal/readme_claims_test.exs`) is
-a structural drift detector: every module in the README's Public
-modules table must exist, every contract test file mentioned must be
-present, every `scripts/*.exs` must be referenced. If you add a new
-public module, contract file, or demo script, that test will fail
-until the README is updated to match.
-
-### Modal-specific wire-shape gotchas (each caught live, comments preserved at call sites)
-
-- **Modal `Cls`**: the class-function's wire name is `<ClassName>.*`
-  (literal `.*`), not `<ClassName>` — Modal uses the wildcard as
-  "single Function handling all method dispatches." AppPublish for
-  classes uses `function_ids` keyed by `<Class>.*` and `class_ids`
-  keyed by `<Class>` — mixing them returns opaque INTERNAL errors. See
-  `lib/modal/cls.ex` (deploy) and `test/modal/cls_test.exs`.
-- **Modal generators**: must use `FUNCTION_CALL_INVOCATION_TYPE_SYNC_LEGACY`
-  at spawn time AND the `FunctionCallGetDataOut` server-streaming RPC
-  (not the regular outputs poller). Plain ASYNC silently returns `[]`
-  for generator functions. See `lib/modal/function.ex` (`stream/2`,
-  `invoke_stream/5`, `spawn/4`'s `:generator` opt).
-- **Modal Volume v2**: `VolumeListFiles` returns
-  `INVALID_ARGUMENT: Operation not supported for v2 volumes`. Use
-  `VolumeListFiles2` (server-streaming) instead. Likewise
-  `VolumeGetFile2`. `VolumeReload` / `VolumeCommit` are
-  worker-only — they return `FAILED_PRECONDITION` from the
-  orchestrator.
-- **Modal Proxy**: dashboard-provisioned only.
-  `ProxyGetOrCreate` returns "Creation method not supported." Library
-  exposes `Modal.Proxy.get/3` only.
-- **`github_cidrs!/1`**: Modal's `NetworkAccess.allowed_cidrs` rejects
-  IPv6 — the helper filters IPv6 by default (`:family` opt).
-
-### Error model is one struct
-
-Every failable op returns
-`{:ok, value} | {:error, %Modal.Error{kind:, code:, message:, metadata:}}`.
-The bang variants raise `%Modal.Error{}` (which `use Exception`).
-`Modal.Error.transient?/1` classifies for retry. Adding a new failure
-mode means adding to the `kind` table in `lib/modal/error.ex`'s
-moduledoc (the table is the canonical contract).
-
-### Telemetry contract
-
-Two event families, identical shape:
-
-- `[:modal, :rpc, :start | :stop | :exception]` — control plane (every
-  method in `Modal.RPC`'s dispatch table).
-- `[:modal, :worker_rpc, :start | :stop | :exception]` — per-exec
-  (task_exec_start, stdio_read, wait, stdin).
-
-Stop metadata always includes `:status` (`:ok | :error`); error stops
-add `:error_kind` (`:grpc | :network | :timeout | …`) and `:code` so
-dashboards can group without pattern-matching the body. `:attempt`
-(0..3) is on **both** start and stop spans for retry visibility — when
-adding a new `call_*` path, include `:attempt` in stop metadata
-manually (`:telemetry` doesn't auto-merge start into stop).
-
-## Demo scripts (`scripts/`)
-
-Self-bootstrapping `.exs` files via `Mix.install/2` — runnable directly
-with `elixir scripts/<name>.exs`. App names follow
-`modal-elixir-<name>`. They take user-specific parameters
-(repo URL, ticket text) via `System.argv()`. They're live dogfood — a
-script breaking is a real bug. If you add one, add a row to the
-Examples table in `README.md` (or `Modal.ReadmeClaimsTest` will fail).
+Drift detector: `Modal.ReadmeClaimsTest` asserts the README's Public
+modules table, contract files, and scripts table stay in sync with the
+actual repo. If you change those, run that test.
 
 ## When stuck
 
-- Wire-format question? Check the corresponding
-  `test/contract/*_contract_test.exs` first — those tests **document**
-  the live wire shape with assertions.
-- "Does Modal do X?" — look at `modal-client/` (upstream Python source
-  checked out at repo root) before guessing. The Python SDK's
-  `_runtime/user_code_imports.py`, `runner.py`, and `_container_io_manager.py`
-  are the most reverse-engineered files in there.
-- Don't add a new event family, error kind, or retry policy without
-  updating the corresponding table in the moduledoc / README. Future
-  Claude (and `Modal.ReadmeClaimsTest`) reads those tables as the
-  contract.
+- Wire-format question → check the corresponding
+  `test/contract/*_contract_test.exs`; those tests **document** the
+  live wire shape with assertions.
+- "Does Modal do X?" → look at `modal-client/` (upstream Python source
+  checked out at repo root); `_runtime/user_code_imports.py`,
+  `runner.py`, and `_container_io_manager.py` are the most
+  reverse-engineered files.
+- When a Mox test breaks after a retry-related change, check whether
+  the test was using `Mox.expect/3` to assert error propagation — the
+  retry now fires N times, breaking the expected count. Switch to
+  `Mox.stub/3` for those cases.
+
+## Maintaining this file
+
+Update when: (a) a Claude session makes a mistake that a rule here
+would have prevented, (b) you add a new public RPC / error kind /
+telemetry event, (c) a wire-shape gotcha is discovered. Treat every
+"Claude got this wrong" moment as a CLAUDE.md edit candidate. Keep
+under ~200 lines — bloat causes rules to be ignored. If a section
+grows into a recipe (multi-step "how to add X"), it belongs in
+`.claude/skills/<name>/SKILL.md` instead.
+
+When compacting a long session, preserve: files modified this session,
+any failing test names, and the contents of `Modal.RPC.@methods` if
+edited.
