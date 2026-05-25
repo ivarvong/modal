@@ -831,11 +831,17 @@ defmodule Modal.Function do
     {:cont, [Modal.Pickle.decode!(bytes) | acc]}
   end
 
-  defp stream_reducer(%{data_oneof: {:data_blob_id, _id}}, acc) do
-    # Blob-backed chunks would need a separate download path; skip
-    # quietly for now (matches what handle_output does for blob
-    # results in await/2).
-    {:cont, acc}
+  defp stream_reducer(%{data_oneof: {:data_blob_id, blob_id}}, _acc) do
+    # Blob-backed chunks (large yielded values stored out-of-band) need a
+    # separate download path that isn't implemented yet. Raise rather than
+    # silently dropping the value — a gappy generator result is worse than
+    # a clear failure. Matches `await/2`'s `{:error, :function_failed}` for
+    # blob results, and the documented raise-on-error contract of
+    # `stream/2` (remote exceptions surface mid-stream as a raise).
+    raise Modal.Error.function_failed(
+            "generator yielded a blob-backed chunk (#{blob_id}); " <>
+              "blob-fetch not yet implemented"
+          )
   end
 
   defp stream_reducer(_chunk, acc), do: {:cont, acc}

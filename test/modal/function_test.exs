@@ -668,6 +668,55 @@ defmodule Modal.FunctionTest do
       assert ["hello ", "world", "!"] = Modal.Function.stream(call) |> Enum.to_list()
     end
 
+    test "stream/2 raises on a blob-backed chunk instead of silently dropping it" do
+      # Large yielded values are stored out-of-band and arrive as a
+      # {:data_blob_id, _} chunk. Blob-fetch isn't implemented, so the
+      # chunk must surface as a raised error (matching await/2's blob
+      # error + stream/2's documented raise-on-error contract) rather
+      # than vanishing and handing back a gappy result.
+      Modal.Client.Mock
+      |> expect(:stream_rpc_reduce, fn _client,
+                                       :function_call_get_data_out,
+                                       _req,
+                                       acc,
+                                       reducer,
+                                       _timeout ->
+        chunks = [
+          %Modal.Client.DataChunk{
+            data_format: :DATA_FORMAT_PICKLE,
+            data_oneof: {:data, Modal.Pickle.encode("first")},
+            index: 1
+          },
+          %Modal.Client.DataChunk{
+            data_format: :DATA_FORMAT_PICKLE,
+            data_oneof: {:data_blob_id, "blob-xyz"},
+            index: 2
+          }
+        ]
+
+        final =
+          Enum.reduce_while(chunks, acc, fn chunk, a ->
+            case reducer.(chunk, a) do
+              {:cont, a2} -> {:cont, a2}
+              {:halt, a2} -> {:halt, a2}
+            end
+          end)
+
+        {:ok, final}
+      end)
+
+      call = %Modal.FunctionCall{id: "fc-stream", function: @gen_func, client: @client}
+
+      err =
+        assert_raise Modal.Error, fn ->
+          Modal.Function.stream(call) |> Enum.to_list()
+        end
+
+      assert err.kind == :function_failed
+      assert err.message =~ "blob-xyz"
+      assert err.message =~ "not yet implemented"
+    end
+
     test "invoke_stream/5 uses SYNC_LEGACY invocation type (load-bearing)" do
       # CPython's _functions.py:1678 — generators require SYNC_LEGACY,
       # not SYNC. Wrong invocation type → server returns 0 outputs.
