@@ -35,10 +35,12 @@ defmodule Modal.Volume do
   called on a mounted volume inside a container"`).
 
   In Modal's reference SDKs those calls work because the SDK is
-  running *inside* the container. This Elixir library runs *outside*
-  the container (it's the orchestrator), so it doesn't expose
-  `commit/2` / `reload/2` — they'd be footguns that fail on every
-  call.
+  running *inside* the container. This library is normally the
+  *orchestrator* (outside the container), where `commit/2` / `reload/2`
+  are rejected with `FAILED_PRECONDITION` — so most callers never touch
+  them. They are still exposed (see `commit/2` / `reload/2`, each with
+  the caveat documented) for the one context that does work: an Elixir
+  node running *inside* a Modal Sandbox with the volume mounted.
 
   Three patterns work from where this library lives:
 
