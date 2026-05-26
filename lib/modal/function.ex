@@ -846,11 +846,22 @@ defmodule Modal.Function do
 
   defp stream_reducer(_chunk, acc), do: {:cont, acc}
 
-  defp poll_await(call, deadline) do
+  defp poll_await(call, deadline), do: poll_await(call, deadline, nil)
+
+  defp poll_await(call, deadline, last_unfinished) do
     remaining_ms = deadline - System.monotonic_time(:millisecond)
 
     if remaining_ms <= 0 do
-      {:error, Modal.Error.timeout()}
+      # Out of time. Disambiguate using the last poll's unfinished-input
+      # count (mirrors CPython `poll_function`, `_functions.py:323`): no
+      # inputs still running ⇒ the call's output expired or its input was
+      # lost (worker preemption, no retry); otherwise it genuinely just
+      # didn't finish in time. A distinct `:output_expired` beats masking a
+      # gone call as a generic timeout.
+      case last_unfinished do
+        0 -> {:error, Modal.Error.output_expired()}
+        _ -> {:error, Modal.Error.timeout()}
+      end
     else
       # Server-side blocking long-poll. Cap at 55s so the client RPC
       # timeout doesn't beat the server's own deadline.
@@ -880,9 +891,11 @@ defmodule Modal.Function do
              request,
              round(poll_timeout * 1000) + 5_000
            ) do
-        {:ok, %{outputs: []}} ->
-          # No result yet — long-poll returned empty, loop.
-          poll_await(call, deadline)
+        {:ok, %{outputs: [], num_unfinished_inputs: unfinished}} ->
+          # No result yet — long-poll again, remembering whether any input
+          # is still running so the deadline branch can tell a genuine
+          # timeout from a call whose output has expired / been lost.
+          poll_await(call, deadline, unfinished)
 
         {:ok, %{outputs: [output | _]}} ->
           handle_output(output)
