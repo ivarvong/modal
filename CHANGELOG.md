@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Modal.Error` kind `:output_expired` — a function call's output is gone
+  (expired / already consumed / input lost), distinct from `:timeout` (the
+  call is still running).
+
 ### Fixed
 
 - `Modal.Sandbox.run/2` now arms the caller-exit watchdog
@@ -20,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently dropping the value and returning a gappy result. Blob-fetch
   is tracked on the roadmap; until then the failure is explicit and
   consistent with `await/2`.
+- `Modal.Function.await/2` now distinguishes a call whose output has expired
+  (or whose input was lost to worker preemption with no retry) from a
+  genuine timeout: when the server reports no result **and** no unfinished
+  inputs, it returns `%Modal.Error{kind: :output_expired}` immediately at the
+  deadline instead of masking it as a generic `:timeout`. Mirrors CPython's
+  `OutputExpiredError`.
 
 ### Changed
 

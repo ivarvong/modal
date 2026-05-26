@@ -558,6 +558,36 @@ defmodule Modal.FunctionTest do
       assert {:ok, 42} = Modal.Function.await(call)
     end
 
+    test "await/2 returns :output_expired when out of time with no result and no unfinished inputs" do
+      # Empty result AND num_unfinished_inputs == 0 ⇒ the call's output is
+      # gone (expired or its input was lost), not still running. We surface
+      # :output_expired rather than masking it as a generic timeout — the
+      # same distinction CPython's poll_function makes (OutputExpiredError).
+      Modal.Client.Mock
+      |> stub(:rpc, fn _c, :function_get_outputs, _req, _t ->
+        {:ok, %Modal.Client.FunctionGetOutputsResponse{outputs: [], num_unfinished_inputs: 0}}
+      end)
+
+      call = %Modal.FunctionCall{id: "fc-expired", function: @func, client: @client}
+
+      assert {:error, %Modal.Error{kind: :output_expired}} =
+               Modal.Function.await(call, timeout_secs: 0.02)
+    end
+
+    test "await/2 returns :timeout (not :output_expired) when an input is still running" do
+      # Empty result but num_unfinished_inputs > 0 ⇒ the call is still
+      # running; we just ran out of patience. That stays a plain :timeout.
+      Modal.Client.Mock
+      |> stub(:rpc, fn _c, :function_get_outputs, _req, _t ->
+        {:ok, %Modal.Client.FunctionGetOutputsResponse{outputs: [], num_unfinished_inputs: 1}}
+      end)
+
+      call = %Modal.FunctionCall{id: "fc-running", function: @func, client: @client}
+
+      assert {:error, %Modal.Error{kind: :timeout}} =
+               Modal.Function.await(call, timeout_secs: 0.02)
+    end
+
     test "blob-stored outputs raise a clear error (not yet implemented)" do
       Modal.Client.Mock
       |> expect(:rpc, fn _, :function_get_outputs, _req, _ ->
