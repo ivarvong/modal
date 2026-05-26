@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Modal.ContainerProcess.await/2` (and `Modal.Sandbox.exec_streaming/3`)
+  no longer fail on execs that run longer than the per-attempt wait
+  deadline (~60s). `TaskExecWait` blocks until the exec exits, so a long
+  process tripped the deadline and surfaced as a non-retried gRPC
+  CANCELLED; the wait now treats its own deadline expiry as "still
+  running, poll again", bounded by the existing attempt cap, with the
+  caller's overall `:timeout` still enforced by `await/2`.
 - `Modal.Sandbox.run/2` now arms the caller-exit watchdog
   (`terminate_on_caller_exit: :silent` by default), so a brutal
   `Process.exit(caller, :kill)` mid-run — which skips the `try/after`

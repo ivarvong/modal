@@ -675,12 +675,14 @@ defmodule Modal.ContainerProcess do
     end
   end
 
-  # ── Wait with retry ──────────────────────────────────────────────
+  # ── Wait: poll until exit, with retry ────────────────────────────
 
-  # ~5 min of cumulative backoff at base=1s, max=30s — covers a worker
-  # paging in slow Docker layers, brief network blips, and Modal-side
-  # restarts. Non-transient errors short-circuit immediately; this cap
-  # only bites on truly stuck servers.
+  # `TaskExecWait` blocks server-side until the exec exits, so a single
+  # call can outlast its per-attempt deadline while the process runs on.
+  # We treat that deadline expiry as "still running, poll again"; the
+  # caller's overall timeout is enforced upstream by `await/2`'s
+  # `Task.yield`. The cap bounds both re-polls and transient retries, so
+  # a wedged server or an instantly-cancelling channel can't spin forever.
   @max_wait_attempts 100
 
   @wait_retry_delay Application.compile_env(:modal, :wait_retry_delay, 1_000)
@@ -711,26 +713,33 @@ defmodule Modal.ContainerProcess do
     end
   end
 
-  # Transient (network, deadline_exceeded, unavailable, etc.) → backoff
-  # and retry up to @max_wait_attempts. Non-transient (permission_denied,
-  # not_found, jwt_expired, …) → surface immediately. Previously every
-  # error spun for the full 100 attempts; a hard auth failure took
-  # minutes to surface.
+  # A wait that hit its own deadline (CANCELLED / DEADLINE_EXCEEDED) means
+  # the exec is still running → re-poll immediately. Transient transport
+  # errors → backoff and retry. Non-transient (permission_denied,
+  # not_found, jwt_expired, …) → surface immediately.
   defp handle_wait_error(%Modal.Error{} = err, proc, attempts) do
     cond do
-      not Modal.Error.transient?(err) ->
-        {:error, err}
-
       attempts >= @max_wait_attempts ->
         {:error, err}
 
-      true ->
+      wait_deadline_elapsed?(err) ->
+        with :ok <- check_jwt(proc), do: wait_loop(proc, attempts + 1)
+
+      Modal.Error.transient?(err) ->
         with :ok <- check_jwt(proc) do
           Process.sleep(Modal.Backoff.delay(attempts, wait_retry_delay()))
           wait_loop(proc, attempts + 1)
         end
+
+      true ->
+        {:error, err}
     end
   end
+
+  # gRPC CANCELLED (1) / DEADLINE_EXCEEDED (4) from a wait call is our own
+  # per-attempt deadline firing, not the exec failing.
+  defp wait_deadline_elapsed?(%Modal.Error{kind: :grpc, code: code}), do: code in [1, 4]
+  defp wait_deadline_elapsed?(_), do: false
 
   defp normalize_error(%Modal.Error{} = e), do: e
   defp normalize_error(%GRPC.RPCError{status: s, message: m}), do: Modal.Error.grpc(s, m)
