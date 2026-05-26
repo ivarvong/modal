@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Modal.App.list/2` and `Modal.App.stop/2` (+ `stop!/2`) — list apps in an
+  environment (`{:ok, [map]}` with `:app_id`, `:description`, `:state`,
+  `:created_at`, `:stopped_at`, `:n_running_tasks`) and stop a deployed app
+  by `%Modal.App{}` or id. Adds `:AppList` / `:AppStop` to `Modal.RPC`
+  `@methods`.
 - `Modal.Error` kind `:output_expired` — a function call's output is gone
   (expired / already consumed / input lost), distinct from `:timeout` (the
   call is still running).

@@ -69,7 +69,9 @@ defmodule Modal.RPC do
   # Map.fetch! crash.
   @methods %{
     AppGetOrCreate: :app_get_or_create,
+    AppList: :app_list,
     AppPublish: :app_publish,
+    AppStop: :app_stop,
     ClassCreate: :class_create,
     ClassGet: :class_get,
     FunctionCallGetDataOut: :function_call_get_data_out,
