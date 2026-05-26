@@ -17,16 +17,18 @@ defmodule Modal.Contract.AppTest do
 
   test "App.lookup returns {:ok, %Modal.App{}} with an id starting with 'ap-'",
        %{client: client} do
-    assert {:ok, %Modal.App{id: app_id, name: "elixir-contract-test", client: ^client}} =
-             Modal.App.lookup(client, "elixir-contract-test")
+    app_name = Support.app_name()
+
+    assert {:ok, %Modal.App{id: app_id, name: ^app_name, client: ^client}} =
+             Modal.App.lookup(client, app_name)
 
     assert is_binary(app_id)
     assert String.starts_with?(app_id, "ap-")
   end
 
   test "App.lookup is idempotent — second call returns the same app_id", %{client: client} do
-    {:ok, %Modal.App{id: id1}} = Modal.App.lookup(client, "elixir-contract-test")
-    {:ok, %Modal.App{id: id2}} = Modal.App.lookup(client, "elixir-contract-test")
+    {:ok, %Modal.App{id: id1}} = Modal.App.lookup(client, Support.app_name())
+    {:ok, %Modal.App{id: id2}} = Modal.App.lookup(client, Support.app_name())
     assert id1 == id2
   end
 
@@ -35,7 +37,7 @@ defmodule Modal.Contract.AppTest do
       Modal.Client.rpc(
         client,
         :app_get_or_create,
-        %Modal.Client.AppGetOrCreateRequest{app_name: "elixir-contract-test"}
+        %Modal.Client.AppGetOrCreateRequest{app_name: Support.app_name()}
       )
 
     assert %Modal.Client.AppGetOrCreateResponse{} = resp

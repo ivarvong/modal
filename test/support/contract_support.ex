@@ -52,6 +52,38 @@ defmodule Modal.Contract.Support do
   end
 
   @doc """
+  The Modal app name contract tests deploy into, namespaced per run.
+
+  Every contract file used to share the single fixed name
+  `"elixir-contract-test"`. Because `Modal.App.lookup/3` is
+  get-or-create, two CI runs hitting the account at the same time
+  (e.g. a `main` push overlapping a PR push) deployed into the *same*
+  app and raced each other's `AppPublish` — whichever run published
+  second re-pointed the shared `{tag => function_id}` routing table,
+  so the other run's just-deployed function 404'd
+  (`No Function with ID …`) or its container came back
+  `GENERIC_STATUS_TERMINATED`. Namespacing the app by run removes the
+  shared mutable state, so concurrent runs can't collide.
+
+  `GITHUB_RUN_ID` is unique per CI run (and stable across a re-run, so
+  a re-run reuses its own app rather than spawning a new one). Locally
+  it falls back to a per-user-stable name so repeated `mix modal.contract`
+  runs reuse one app instead of accumulating.
+
+  > Note: there's no teardown — `Modal.App` has no stop/delete RPC yet,
+  > so these apps linger. That's a known follow-up (add `App.stop/2`),
+  > tracked separately; correctness (no cross-run collisions) comes first.
+  """
+  @spec app_name() :: String.t()
+  def app_name do
+    "elixir-contract-test-" <> run_slug()
+  end
+
+  defp run_slug do
+    System.get_env("GITHUB_RUN_ID") || "local-#{System.get_env("USER") || "dev"}"
+  end
+
+  @doc """
   Strict field-and-shape assertion for protobuf response structs.
 
   Each entry in `checks` maps a field name to a typed check. Supported

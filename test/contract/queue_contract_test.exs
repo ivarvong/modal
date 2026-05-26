@@ -19,7 +19,7 @@ defmodule Modal.Contract.QueueTest do
 
   setup_all do
     client = Support.client!()
-    {:ok, app} = Modal.App.lookup(client, "elixir-contract-test")
+    {:ok, app} = Modal.App.lookup(client, Support.app_name())
     %{client: client, app: app}
   end
 
