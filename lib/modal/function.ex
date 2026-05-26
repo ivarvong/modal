@@ -793,14 +793,19 @@ defmodule Modal.Function do
         timeout
       )
 
-    # The data-out stream carries only successfully-yielded values plus the
-    # GENERATOR_DONE terminator; the call's terminal success/failure is
-    # delivered separately via FunctionGetOutputs (CPython's `run_generator`
-    # at `_functions.py:333` merges the data stream with a `poll_function`
-    # call that raises on failure). A generator that fails to import or raises
-    # mid-stream sends no GENERATOR_DONE and may yield nothing — so without
-    # this check the failure surfaces as a silent, partial/empty list. When
-    # the terminator is missing, poll the terminal result and re-raise.
+    # The data-out stream carries only the yielded values; the call's terminal
+    # success/failure is delivered separately via FunctionGetOutputs (CPython's
+    # `run_generator` at `_functions.py:333` merges the data stream with a
+    # `poll_function` call that raises on failure). Without consulting that, a
+    # generator that fails to import or raises — yielding nothing — surfaces as
+    # a silent, partial/empty list.
+    #
+    # A clean run *may* end with a recognizable GENERATOR_DONE terminator
+    # chunk, but live the stream often just EOFs after the data chunks, so
+    # `done?` is unreliable as a success signal. We treat it only as a
+    # definite-success fast path (skip the poll); otherwise poll the terminal
+    # result and raise *only* if it reports failure (see
+    # `raise_on_generator_failure!` — it checks status, never decodes).
     unless done?, do: raise_on_generator_failure!(call)
 
     Enum.reverse(chunks)
@@ -878,15 +883,15 @@ defmodule Modal.Function do
     }
 
     case RPC.call_no_retry(call.client, :FunctionGetOutputs, request, 10_000) do
-      {:ok, %{outputs: [output | _]}} ->
-        case handle_output(output) do
-          {:error, %Modal.Error{} = err} -> raise err
-          {:ok, _} -> :ok
-        end
+      {:ok, %{outputs: [%{result: %{status: :GENERIC_STATUS_FAILURE} = result} | _]}} ->
+        raise Modal.Error.function_failed(result.exception || "(no message)", result.traceback)
 
       _ ->
-        # No terminal result in the window (or a transient transport error) —
-        # don't manufacture a failure; the stream returned what it had.
+        # Success / terminated / no result yet / transport blip. We inspect
+        # only the terminal *status* — a successful generator's result carries
+        # a `GeneratorDone` protobuf, not a pickled value, so decoding it (as
+        # `handle_output` does) would raise on non-pickle bytes. We only need
+        # to distinguish an explicit failure from everything else.
         :ok
     end
   end
