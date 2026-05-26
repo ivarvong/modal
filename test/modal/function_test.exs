@@ -717,6 +717,103 @@ defmodule Modal.FunctionTest do
       assert err.message =~ "not yet implemented"
     end
 
+    test "stream/2 raises when a generator fails to start (no GENERATOR_DONE → terminal result)" do
+      # The gen_dump.py case: the generator's module fails to import on the
+      # worker, so it yields nothing and the data-out stream closes WITHOUT a
+      # GENERATOR_DONE terminator. The failure lives in FunctionGetOutputs;
+      # stream/2 must poll it and raise, not hand back a silent [].
+      Modal.Client.Mock
+      |> expect(:stream_rpc_reduce, fn _client,
+                                       :function_call_get_data_out,
+                                       _req,
+                                       acc,
+                                       _reducer,
+                                       _timeout ->
+        # No chunks, no GENERATOR_DONE — return the initial accumulator.
+        {:ok, acc}
+      end)
+      |> expect(:rpc, fn _client, :function_get_outputs, req, _timeout ->
+        # Generators read the terminal result non-destructively.
+        assert req.clear_on_success == false
+
+        output = %Modal.Client.FunctionGetOutputsItem{
+          result: %Modal.Client.GenericResult{
+            status: :GENERIC_STATUS_FAILURE,
+            exception: "ModuleNotFoundError: No module named 'rich'",
+            traceback: "Traceback (most recent call last): ... gen_dump.py ..."
+          }
+        }
+
+        {:ok, %Modal.Client.FunctionGetOutputsResponse{outputs: [output]}}
+      end)
+
+      call = %Modal.FunctionCall{id: "fc-gen-fail", function: @gen_func, client: @client}
+
+      err =
+        assert_raise Modal.Error, fn ->
+          Modal.Function.stream(call) |> Enum.to_list()
+        end
+
+      assert err.kind == :function_failed
+      assert err.message =~ "rich"
+    end
+
+    test "stream/2 raises rather than returning a partial list when a generator fails mid-stream" do
+      # Some values arrive, then the generator raises — the stream closes with
+      # no GENERATOR_DONE. We must surface the failure, not the partial list.
+      Modal.Client.Mock
+      |> expect(:stream_rpc_reduce, fn _client,
+                                       :function_call_get_data_out,
+                                       _req,
+                                       acc,
+                                       reducer,
+                                       _timeout ->
+        chunks = [
+          %Modal.Client.DataChunk{
+            data_format: :DATA_FORMAT_PICKLE,
+            data_oneof: {:data, Modal.Pickle.encode(0)},
+            index: 1
+          },
+          %Modal.Client.DataChunk{
+            data_format: :DATA_FORMAT_PICKLE,
+            data_oneof: {:data, Modal.Pickle.encode(1)},
+            index: 2
+          }
+        ]
+
+        final =
+          Enum.reduce_while(chunks, acc, fn c, a ->
+            case reducer.(c, a) do
+              {:cont, a2} -> {:cont, a2}
+              {:halt, a2} -> {:halt, a2}
+            end
+          end)
+
+        {:ok, final}
+      end)
+      |> expect(:rpc, fn _client, :function_get_outputs, _req, _timeout ->
+        output = %Modal.Client.FunctionGetOutputsItem{
+          result: %Modal.Client.GenericResult{
+            status: :GENERIC_STATUS_FAILURE,
+            exception: "RuntimeError: boom",
+            traceback: "..."
+          }
+        }
+
+        {:ok, %Modal.Client.FunctionGetOutputsResponse{outputs: [output]}}
+      end)
+
+      call = %Modal.FunctionCall{id: "fc-gen-partial", function: @gen_func, client: @client}
+
+      err =
+        assert_raise Modal.Error, fn ->
+          Modal.Function.stream(call) |> Enum.to_list()
+        end
+
+      assert err.kind == :function_failed
+      assert err.message =~ "RuntimeError"
+    end
+
     test "invoke_stream/5 uses SYNC_LEGACY invocation type (load-bearing)" do
       # CPython's _functions.py:1678 — generators require SYNC_LEGACY,
       # not SYNC. Wrong invocation type → server returns 0 outputs.
