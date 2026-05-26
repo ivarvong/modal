@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Process.exit(caller, :kill)` mid-run — which skips the `try/after`
   cleanup — no longer leaks the sandbox. Pass
   `terminate_on_caller_exit: false` to opt out.
+- Generator streams (`Modal.Function.stream/2` / `invoke_stream/5`) now
+  raise `%Modal.Error{kind: :function_failed}` when the worker yields a
+  blob-backed chunk (a large value stored out-of-band), instead of
+  silently dropping the value and returning a gappy result. Blob-fetch
+  is tracked on the roadmap; until then the failure is explicit and
+  consistent with `await/2`.
 
 ### Changed
 
