@@ -1,48 +1,20 @@
-# Reproduce Manhattanhenge — end to end, from Elixir, with no human in
-# the loop.
+# Reproduce Manhattanhenge 2026, end to end, from Elixir.
 #
-# The story (a nod to Neil deGrasse Tyson, who named the phenomenon):
-# Manhattanhenge is the evening the setting Sun aligns with Manhattan's
-# street grid, pouring straight down the cross-town canyons. The grid's
-# sunset bearing is azimuth 299.1° (true north, clockwise — about 29.1°
-# north of due west). The question this script answers: on which days in
-# May 2026 does the Sun cross that bearing, at what time, and at what
-# (refraction-corrected) altitude?
+# Three machine-checked steps:
+#   1. BUILD   — run the Claude Code CLI in a Modal sandbox; it writes a
+#                DE440/Skyfield calc + a FastAPI app from a short brief.
+#   2. DEPLOY  — read the app out, bake it into an Image, deploy_asgi it.
+#   3. VERIFY  — curl the live endpoint: smoke-test + correctness in one.
 #
-# We don't answer it ourselves. We use this library to:
-#
-#   1. BUILD (live, in a Modal sandbox): boot the Claude Code CLI inside
-#      a sandbox and hand it a precise spec. Claude writes the DE440
-#      calculation (Skyfield) and a FastAPI app — uv/Python, a real
-#      ephemeris library, no hand-rolled orbital mechanics.
-#   2. SANITY-CHECK: run Claude's calc in the sandbox and assert it
-#      reports the two known Manhattanhenge dates — 2026-05-28 and
-#      2026-05-29 — at ~20:13 / ~20:12 EDT.
-#   3. DEPLOY: read Claude's app out of the sandbox, bake it into a
-#      Modal Image, and `deploy_asgi` it to a persistent HTTPS endpoint.
-#   4. CURL-VERIFY: hit the live endpoint and assert it returns the same
-#      two dates.
-#
-# Every step is machine-checked — the script raises if any gate fails.
-#
-#     set -a; source .env; set +a            # MODAL_TOKEN_* + ANTHROPIC_API_KEY
+#     set -a; source .env; set +a     # MODAL_TOKEN_* + ANTHROPIC_API_KEY
 #     elixir scripts/manhattanhenge.exs
 #
-# Why apparent altitude is the whole game (the load-bearing subtlety):
-# near the horizon, atmospheric refraction lifts the Sun by ~0.5° — MORE
-# than the Sun's own radius (0.27°). So the altitude we report is the
-# APPARENT (refraction-corrected) altitude, where the disk actually
-# appears. On the henge evening of May 28 the Sun's GEOMETRIC center is
-# 0.045° *below* the true horizon (compute geometric and you'd call it
-# already set), yet refraction holds it at an apparent +0.44° — visibly up
-# and square in the grid. Reporting geometric altitude would be flat wrong.
-#
-# May 28 & 29 are the published 2026 dates (American Museum of Natural
-# History). We don't re-derive the calendar dates — every true-horizon rule
-# lands on May 25–27; the published 28/29 bake in NYC's real elevated
-# horizon, i.e. the New Jersey Palisades, which we were told to note but NOT
-# compensate for. We compute the genuinely hard part — the exact az=299.1°
-# crossing time and apparent altitude (DE440 + refraction) — and verify it.
+# Azimuth 299.1° is the Manhattan grid's sunset bearing. The reported
+# altitude is the apparent (refraction-corrected) one — near the horizon
+# refraction (~0.5°) exceeds the Sun's radius, so geometric altitude is
+# misleading. May 28 & 29 are the published 2026 dates, taken as given;
+# the calc reproduces the crossing time and apparent altitude. See the PR
+# for the full story.
 
 Mix.install([
   {:modal, path: Path.expand("..", __DIR__)},
@@ -53,10 +25,8 @@ defmodule Manhattanhenge do
   @app_name "modal-elixir-manhattanhenge"
   @workdir "/work"
 
-  # The two dates we expect Claude's DE440 calc to land on, and the
-  # rough EDT crossing times. These are the gate — derived independently
-  # from the published Manhattanhenge 2026 dates, asserted both against
-  # the in-sandbox calc and the live endpoint.
+  # The gate: the published 2026 dates and the EDT crossing-time window,
+  # asserted against the live endpoint.
   @expected_dates ["2026-05-28", "2026-05-29"]
   @expected_edt_hour 20
   @expected_edt_minutes 10..15
@@ -69,121 +39,53 @@ defmodule Manhattanhenge do
   # is ephemeral; this is just for inspection after the run).
   @artifact_dir "/tmp/henge_artifacts"
 
-  # The spec we hand to Claude Code. Claude implements the physics and the
-  # FastAPI plumbing; we dictate the I/O contract (exact JSON shape, the
-  # `serve()` entrypoint) so extraction + deploy stay deterministic
-  # regardless of how Claude writes the internals.
+  # The brief for Claude. We pin only the I/O contract (JSON shape +
+  # serve() entrypoint) so extraction and deploy stay deterministic; the
+  # astronomy is Claude's, and STAGE 3 verifies it.
   @spec_md """
-  # Manhattanhenge 2026 — implementation spec
+  # Manhattanhenge 2026 — build two files in #{@workdir}
 
-  Build two Python files in #{@workdir} using **Skyfield** + the **JPL
-  DE440** ephemeris. DE440 is pre-downloaded at `/opt/ephem/de440s.bsp`
-  (the short 1849–2150 span of DE440 — fully covers 2026). Skyfield,
-  FastAPI, uvicorn and numpy are already installed (uv, system env). Load
-  the ephemeris like:
+  Manhattanhenge is the evening the setting Sun aligns with the Manhattan
+  street grid: **azimuth 299.1°** (true north, clockwise). Compute it with
+  **Skyfield + JPL DE440**, pre-installed at `/opt/ephem/de440s.bsp`:
 
       from skyfield.api import Loader
       eph = Loader('/opt/ephem')('de440s.bsp')
 
-  ## The physics — be precise
+  Observer: Manhattan grid — lat 40.7527, lon -73.9772, elev 10 m.
 
-  Observer: Manhattan grid reference — latitude 40.7527, longitude
-  -73.9772, elevation 10 m (`wgs84.latlon`).
+  For an America/New_York date, find the instant the Sun's azimuth crosses
+  299.1° on its afternoon descent toward sunset. Report the **apparent
+  (refraction-corrected) altitude** there — near the horizon refraction
+  (~0.5°) exceeds the Sun's radius (0.27°), so apparent, not geometric, is
+  the observable; use `.altaz(temperature_C=10, pressure_mbar=1010)`. Also
+  report the geometric altitude (plain `.altaz()`) for contrast. Use the
+  true sea-level horizon — do NOT correct for the New Jersey Palisades. The
+  2026 dates are the published **May 28 & 29** (treat as a known constant).
 
-  Grid azimuth: **299.1°**, measured from true north, clockwise (the
-  Manhattan street-grid sunset bearing, ~29.1° north of due west).
+  ## #{@workdir}/henge.py
 
-  For a given calendar day (timezone America/New_York), find the instant
-  in the late afternoon when the Sun's azimuth crosses 299.1° while
-  descending toward sunset (azimuth increasing through 299.1°). Use the
-  Sun's apparent position: `observer.at(t).observe(sun).apparent()`.
-  Azimuth is essentially unaffected by refraction, so find the crossing
-  from `.altaz()` (no refraction) and bisect to < 1 second.
+  A module exposing two functions for app.py to import:
+    * `crossing(d: datetime.date) -> dict` with keys `date`,
+      `crossing_utc` (ISO, `…Z`), `crossing_edt` (ISO, with offset),
+      `apparent_altitude_deg`, `geometric_altitude_deg` — altitudes
+      rounded to 2 dp. (For 2026-05-28: crossing_edt
+      `2026-05-28T20:13:15-04:00`, apparent 0.44, geometric -0.05.)
+    * `manhattanhenge(year, month) -> [date strings]`; May 2026 returns
+      `["2026-05-28", "2026-05-29"]`.
 
-  At that crossing instant, report TWO altitudes:
-    * `geometric_altitude_deg` — from `.altaz()` (NO refraction).
-    * `apparent_altitude_deg`  — from `.altaz(temperature_C=10,
-      pressure_mbar=1010)` (refraction-corrected; where the disk
-      APPEARS). Be careful: apparent != geometric. Refraction lifts the
-      Sun by ~0.5° near the horizon.
+  ## #{@workdir}/app.py
 
-  ## Apparent altitude is the reported observable — refraction is mandatory
-
-  REPORT the APPARENT (refraction-corrected) altitude. Near the horizon
-  refraction is ~0.5°, LARGER than the Sun's angular radius (~0.27°), so
-  geometric altitude is physically misleading: on 2026-05-28 the Sun's
-  geometric center is ~0.045° BELOW the true horizon while its apparent
-  altitude is ~+0.44° (visibly up). ALWAYS apply refraction via
-  `.altaz(temperature_C=10, pressure_mbar=1010)`. Report geometric altitude
-  too, but only as the contrast that shows why refraction matters — it is
-  NOT the observable.
-
-  Do NOT compensate for the New Jersey Palisades or buildings (mention them
-  in a comment; apply no horizon-elevation correction) — compute against the
-  true sea-level horizon.
-
-  ## Manhattanhenge 2026 dates
-
-  The Manhattanhenge 2026 dates are 2026-05-28 and 2026-05-29 (as published
-  by the American Museum of Natural History). Treat them as known constants:
-  `manhattanhenge_2026 = ["2026-05-28", "2026-05-29"]`. Your job is NOT to
-  re-derive the calendar dates (every flat-horizon rule lands a few days
-  early) but to compute, with DE440 + refraction, the exact az=299.1°
-  crossing time and apparent altitude on those days and the surrounding
-  window. The computed crossing MUST land at ~20:13 EDT (May 28) and ~20:12
-  EDT (May 29), with apparent altitude ~+0.44° and ~+0.63° respectively.
-
-  ## File 1: #{@workdir}/henge.py
-
-  A module with the calculation. Running `python #{@workdir}/henge.py`
-  MUST print to stdout exactly this JSON (one compact object):
-
-      {
-        "azimuth_deg": 299.1,
-        "observer": {"lat": 40.7527, "lon": -73.9772, "elev_m": 10.0},
-        "ephemeris": "de440s.bsp (DE440)",
-        "refraction": {"temperature_C": 10.0, "pressure_mbar": 1010.0},
-        "manhattanhenge_2026": ["2026-05-28", "2026-05-29"],
-        "crossings": [ <crossing>, ...  one per day 2026-05-20 .. 2026-05-31 ]
-      }
-
-  A <crossing> object is:
-
-      {
-        "date": "2026-05-28",                       # America/New_York date
-        "crossing_utc": "2026-05-29T00:13:15Z",
-        "crossing_edt": "2026-05-28T20:13:15-04:00",
-        "apparent_altitude_deg": 0.44,              # rounded to 2 dp
-        "geometric_altitude_deg": -0.05
-      }
-
-  Expose reusable functions `crossing(d)` (d: datetime.date) -> crossing
-  dict and `manhattanhenge(year, month)` -> list of date strings, so
-  app.py can import them.
-
-  ## File 2: #{@workdir}/app.py
-
-  A FastAPI app. Expose a module-level function `serve()` that BUILDS and
-  RETURNS the FastAPI app object. Do NOT add `@modal.asgi_app` or any
-  decorator, and do NOT call uvicorn — a host imports `serve()` and runs
-  the returned ASGI app. Load the ephemeris ONCE at import (module level)
-  and reuse it across requests.
-
-  Endpoints:
-    * `GET /`               -> {"service": "manhattanhenge", "azimuth_deg":
-                               299.1, "ephemeris": "...", "endpoints": [...]}
-    * `GET /manhattanhenge` -> {"year": 2026, "dates": ["2026-05-28",
-                               "2026-05-29"], "crossings": [<crossing>,
-                               <crossing>]}  (the two henge days)
-    * `GET /crossing/{date}`-> a single <crossing> for any YYYY-MM-DD,
-                               computed on demand. Bad date -> HTTP 422.
-
-  Keep both files clean and commented. When done, run
-  `python #{@workdir}/henge.py` and confirm the JSON shows May 28 & 29.
+  A FastAPI app with a module-level `serve()` that builds and returns it
+  (no `@modal.asgi_app`, no uvicorn — a host imports `serve()`). Load the
+  ephemeris once at import. Routes:
+    * `GET /` -> `{"service","azimuth_deg":299.1,"ephemeris","endpoints"}`
+    * `GET /manhattanhenge` -> `{"year":2026,"dates":[…],"crossings":[…]}`
+      for the two dates
+    * `GET /crossing/{date}` -> one `<crossing>`; HTTP 422 on a bad date
   """
 
   def run do
-    setup_telemetry()
     :logger.set_application_level(:grpc, :warning)
 
     anthropic_key =
@@ -200,17 +102,16 @@ defmodule Manhattanhenge do
     {henge_py, app_py} =
       with_sandbox(client, app, base_image, secret_id, fn sandbox ->
         claude_builds_it!(sandbox)
-        sanity_check!(sandbox)
         extract_files!(sandbox)
       end)
 
     web = deploy!(client, app, base_image, henge_py, app_py)
-    curl_verify!(web)
+    verify!(web)
 
     print_summary(web)
   end
 
-  # ── STAGE 1a: base image (Claude CLI + uv + Skyfield + DE440) ─────
+  # ── SETUP: base image (Claude CLI + uv + Skyfield + DE440) ────────
   #
   # Content-addressed: identical layers cache-hit. The DE440 ephemeris
   # (de440s.bsp) is pre-fetched into the image so the calc runs offline
@@ -218,7 +119,7 @@ defmodule Manhattanhenge do
   # layers) carries the ephemeris too.
 
   defp build_base_image!(client, app) do
-    log_header("STAGE 1a — base image (Claude Code + uv + Skyfield + DE440)")
+    log_header("SETUP — base image (Claude Code CLI + uv + Skyfield + DE440)")
     t = now()
 
     {:ok, image_id, status} =
@@ -273,20 +174,15 @@ defmodule Manhattanhenge do
     end
   end
 
-  # ── STAGE 1b: Claude Code writes the implementation, live ─────────
+  # ── STAGE 1 — BUILD: Claude Code writes the implementation, live ──
 
-  # Claude needs minutes to read the spec and write both files — longer
-  # than the 60s deadline baked into the exec/await `wait_loop` (which
-  # surfaces as a non-retried CANCELLED). So we DON'T await: launch
-  # claude as a *background* exec under a PTY (Claude refuses to run
-  # without a terminal, and refuses --dangerously-skip-permissions as
-  # root, which we are), redirect its transcript to a file plus an
-  # EXIT-code sentinel, then poll the filesystem (main channel, no worker
-  # wait) until the sentinel appears.
+  # Long claude runs exceed the exec/await 60s wait deadline, so we launch
+  # it as a background exec under a PTY (claude needs a terminal) and poll
+  # the filesystem for an exit-code sentinel instead of awaiting.
   @claude_deadline_ms 600_000
 
   defp claude_builds_it!(sandbox) do
-    log_header("STAGE 1b — Claude Code writes the DE440 calc + FastAPI app (live)")
+    log_header("STAGE 1 — BUILD: Claude writes the DE440 calc + FastAPI app (live)")
 
     Modal.Filesystem.write_file!(sandbox, "#{@workdir}/SPEC.md", @spec_md)
     log("  wrote SPEC.md (#{byte_size(@spec_md)} bytes)")
@@ -350,26 +246,9 @@ defmodule Manhattanhenge do
     end)
   end
 
-  # ── STAGE 2a: sanity-check Claude's calc in the sandbox ───────────
-  #
-  # Run the calc and assert it produced the two known Manhattanhenge
-  # dates at the right times, with apparent altitude clearly distinct
-  # from geometric (i.e. refraction was actually applied).
-
-  defp sanity_check!(sandbox) do
-    log_header("STAGE 2a — sanity-check the calc (in-sandbox, automated)")
-
-    proc = Modal.Sandbox.exec!(sandbox, ["python", "#{@workdir}/henge.py"], workdir: @workdir)
-    result = Modal.ContainerProcess.await!(proc, timeout: 120_000)
-    Modal.ContainerProcess.close(proc)
-    assert!(result.code == 0, "henge.py exited #{result.code}\n#{result.stderr}")
-
-    data = decode_json_lax!(result.stdout)
-    assert_henge!(data["manhattanhenge_2026"], data["crossings"], "calc")
-  end
-
-  # The shared assertion used for BOTH the in-sandbox calc and the live
-  # endpoint — same contract, two surfaces.
+  # The correctness gate, run against the live endpoint: the two
+  # published dates, each crossing at ~20:1x EDT with an apparent
+  # (refraction-corrected) altitude clearly above the geometric one.
   defp assert_henge!(dates, crossings, where) do
     assert!(
       dates == @expected_dates,
@@ -393,16 +272,14 @@ defmodule Manhattanhenge do
       geo_alt = c["geometric_altitude_deg"]
       refraction = app_alt - geo_alt
 
-      # Apparent altitude is the observable: the disk sits just above the
-      # true horizon at the grid bearing.
+      # Apparent altitude: the disk sits just above the true horizon.
       assert!(
         is_number(app_alt) and app_alt > 0.0 and app_alt < 1.2,
         "#{where}: #{date} apparent altitude #{inspect(app_alt)}° outside (0°, 1.2°) — refraction not applied?"
       )
 
-      # Refraction near the horizon is ~0.5° — larger than the Sun's radius
-      # (0.27°). The whole point: on May 28 it's the difference between a
-      # geometrically-below-horizon Sun and an apparent, visible one.
+      # Refraction near the horizon is ~0.5°; confirms it was applied
+      # (apparent altitude well above geometric).
       assert!(
         refraction > 0.35 and refraction < 0.65,
         "#{where}: #{date} refraction (apparent−geometric) #{fmt(refraction)}° not ~0.5° — refraction model wrong"
@@ -417,10 +294,10 @@ defmodule Manhattanhenge do
     log("  ✓ #{where}: Manhattanhenge 2026 = #{Enum.join(dates, " & ")}")
   end
 
-  # ── STAGE 2b: extract Claude's files out of the sandbox ───────────
+  # ── STAGE 2 — DEPLOY: read Claude's app out, bake an Image, deploy ─
 
   defp extract_files!(sandbox) do
-    log_header("STAGE 2b — extract Claude's files for deploy")
+    log_header("STAGE 2 — DEPLOY: read Claude's app out, bake an Image, deploy_asgi")
     henge_py = Modal.Filesystem.read_file!(sandbox, "#{@workdir}/henge.py")
     app_py = Modal.Filesystem.read_file!(sandbox, "#{@workdir}/app.py")
     log("  henge.py: #{byte_size(henge_py)} bytes, app.py: #{byte_size(app_py)} bytes")
@@ -442,15 +319,12 @@ defmodule Manhattanhenge do
     {henge_py, app_py}
   end
 
-  # ── STAGE 3: bake Claude's app into an image and deploy_asgi ──────
-  #
   # Reuse the base image's dockerfile prefix (cache hits — ephemeris and
   # deps don't rebuild) and append the two generated files. deploy_asgi
   # imports `app:serve` and serves the returned FastAPI app on a stable
   # HTTPS URL that scales to zero.
 
   defp deploy!(client, app, _base_image, henge_py, app_py) do
-    log_header("STAGE 3 — bake app into an image + deploy_asgi (persistent endpoint)")
     t = now()
 
     {:ok, deploy_image, status} =
@@ -488,10 +362,10 @@ defmodule Manhattanhenge do
     web
   end
 
-  # ── STAGE 4: curl the live endpoint and assert it agrees ──────────
+  # ── STAGE 3 — VERIFY: smoke-test + correctness on the live endpoint ─
 
-  defp curl_verify!(%Modal.Function{web_url: url}) do
-    log_header("STAGE 4 — curl the live endpoint (automated)")
+  defp verify!(%Modal.Function{web_url: url}) do
+    log_header("STAGE 3 — VERIFY: smoke-test + correctness on the live endpoint")
 
     %{status: 200, body: root} = req_get!(url <> "/")
     log("  GET /            → 200  azimuth #{root["azimuth_deg"]}°")
@@ -509,7 +383,7 @@ defmodule Manhattanhenge do
 
   # ── helpers ───────────────────────────────────────────────────────
 
-  # The base image's dockerfile, factored out so STAGE 1a and STAGE 3
+  # The base image's dockerfile, factored out so SETUP and STAGE 2
   # share a byte-identical prefix (and therefore the layer cache).
   defp base_dockerfile do
     [
@@ -557,15 +431,6 @@ defmodule Manhattanhenge do
     Req.get!(url, receive_timeout: 60_000, retry: :transient, max_retries: 5)
   end
 
-  # Claude's henge.py is told to print only the JSON object, but it may
-  # log a stray line. Extract the outermost {...} and decode that.
-  defp decode_json_lax!(stdout) do
-    case Regex.run(~r/\{.*\}/s, stdout) do
-      [json] -> JSON.decode!(json)
-      _ -> raise "no JSON object in calc output:\n#{stdout}"
-    end
-  end
-
   defp shell_escape(s), do: "'" <> String.replace(s, "'", ~S('"'"')) <> "'"
 
   defp strip_ansi(s) do
@@ -582,26 +447,6 @@ defmodule Manhattanhenge do
   defp fmt(n) when is_number(n), do: :erlang.float_to_binary(n / 1, decimals: 3)
   defp fmt(n), do: inspect(n)
 
-  # ── telemetry (control-plane + worker-channel call counts) ────────
-
-  defp setup_telemetry do
-    {:ok, _} = Agent.start_link(fn -> %{} end, name: __MODULE__.Metrics)
-
-    :telemetry.attach_many(
-      "manhattanhenge-telemetry",
-      [[:modal, :rpc, :stop], [:modal, :worker_rpc, :stop]],
-      &__MODULE__.on_telemetry/4,
-      nil
-    )
-  end
-
-  @doc false
-  def on_telemetry(event, _measurements, meta, _config) do
-    [_, family, _] = event
-    key = {family, meta.method, Map.get(meta, :status)}
-    Agent.update(__MODULE__.Metrics, fn m -> Map.update(m, key, 1, &(&1 + 1)) end)
-  end
-
   defp print_summary(%Modal.Function{web_url: url}) do
     log_header("LIVE — Manhattanhenge 2026 reproduced")
 
@@ -616,22 +461,6 @@ defmodule Manhattanhenge do
 
       It scales to zero at rest; re-running this script redeploys in place.
     """)
-
-    metrics = Agent.get(__MODULE__.Metrics, & &1)
-
-    rpc_total =
-      metrics
-      |> Enum.filter(fn {{f, _, _}, _} -> f == :rpc end)
-      |> Enum.map(&elem(&1, 1))
-      |> Enum.sum()
-
-    worker_total =
-      metrics
-      |> Enum.filter(fn {{f, _, _}, _} -> f == :worker_rpc end)
-      |> Enum.map(&elem(&1, 1))
-      |> Enum.sum()
-
-    log("  RPCs: #{rpc_total} control-plane, #{worker_total} worker-channel")
   end
 
   defp log_header(msg), do: IO.puts(:stderr, "\n\e[1m── #{msg} ──────────────\e[0m")
