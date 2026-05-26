@@ -51,6 +51,8 @@ defmodule Modal.Error do
   | `:exec_start_failed`  | `nil`              | `TaskExecStart` RPC failed                  |
   | `:exec_failed`        | exit code (int)    | exec ran to completion with a non-zero exit |
   | `:exec_unknown_status`| `nil`              | exec finished but no exit code was reported |
+  | `:function_failed`    | `nil`              | remote function/generator raised or failed  |
+  | `:output_expired`     | `nil`              | call output expired or its input was lost   |
   | `:credentials_missing`| `nil`              | `Modal.Credentials.load/1` couldn't find any |
   | `:unexpected`         | `nil`              | streaming RPC yielded an unexpected item    |
 
@@ -76,6 +78,7 @@ defmodule Modal.Error do
           | :exec_failed
           | :exec_unknown_status
           | :function_failed
+          | :output_expired
           | :credentials_missing
           | :unexpected
 
@@ -118,6 +121,15 @@ defmodule Modal.Error do
   @doc "Operation exceeded its deadline."
   @spec timeout() :: t()
   def timeout, do: %__MODULE__{kind: :timeout}
+
+  @doc """
+  A function call produced no result and has no inputs still running — its
+  output expired (already consumed or garbage-collected) or its input was
+  lost (e.g. worker preemption with no retry). Terminal: the result is gone;
+  re-`invoke`/`spawn` the call to run it again.
+  """
+  @spec output_expired() :: t()
+  def output_expired, do: %__MODULE__{kind: :output_expired}
 
   @doc "`Modal.Client` is at `:max_concurrency`."
   @spec overloaded() :: t()

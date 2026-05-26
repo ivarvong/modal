@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Modal.App.list/2` and `Modal.App.stop/2` (+ `stop!/2`) — list apps in an
+  environment (`{:ok, [map]}` with `:app_id`, `:description`, `:state`,
+  `:created_at`, `:stopped_at`, `:n_running_tasks`) and stop a deployed app
+  by `%Modal.App{}` or id. Adds `:AppList` / `:AppStop` to `Modal.RPC`
+  `@methods`.
+- `Modal.Error` kind `:output_expired` — a function call's output is gone
+  (expired / already consumed / input lost), distinct from `:timeout` (the
+  call is still running).
+
 ### Fixed
 
+- `Modal.ContainerProcess.await/2` (and `Modal.Sandbox.exec_streaming/3`)
+  no longer fail on execs that run longer than the per-attempt wait
+  deadline (~60s). `TaskExecWait` blocks until the exec exits, so a long
+  process tripped the deadline and surfaced as a non-retried gRPC
+  CANCELLED; the wait now treats its own deadline expiry as "still
+  running, poll again", bounded by the existing attempt cap, with the
+  caller's overall `:timeout` still enforced by `await/2`.
 - `Modal.Sandbox.run/2` now arms the caller-exit watchdog
   (`terminate_on_caller_exit: :silent` by default), so a brutal
   `Process.exit(caller, :kill)` mid-run — which skips the `try/after`
@@ -26,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of returning a silent empty/partial list. `stream/2` now polls the
   terminal `FunctionGetOutputs` result when the data-out stream ends without
   a `GENERATOR_DONE` terminator (matching CPython's `run_generator`).
+- `Modal.Function.await/2` now distinguishes a call whose output has expired
+  (or whose input was lost to worker preemption with no retry) from a
+  genuine timeout: when the server reports no result **and** no unfinished
+  inputs, it returns `%Modal.Error{kind: :output_expired}` immediately at the
+  deadline instead of masking it as a generic `:timeout`. Mirrors CPython's
+  `OutputExpiredError`.
 
 ### Changed
 

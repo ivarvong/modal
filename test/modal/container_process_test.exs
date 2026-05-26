@@ -147,6 +147,39 @@ defmodule Modal.ContainerProcessTest do
       assert {:error, %Modal.Error{kind: :jwt_expired}} =
                Modal.ContainerProcess.exit_code(expired_proc())
     end
+
+    test "re-polls when the wait hits its own deadline (CANCELLED), then returns the code" do
+      # A long-running exec outlasts the per-attempt wait deadline, which
+      # surfaces as gRPC CANCELLED. That means "still running", not failure
+      # — wait_loop must re-poll, not give up.
+      Modal.TaskCommandRouter.Mock
+      |> expect(:task_exec_wait, fn :fake_channel, _req, _opts ->
+        {:error, %GRPC.RPCError{status: 1, message: "Timeout expired"}}
+      end)
+      |> expect(:task_exec_wait, fn :fake_channel, _req, _opts ->
+        {:ok, %Modal.TaskCommandRouter.TaskExecWaitResponse{exit_status: {:code, 0}}}
+      end)
+
+      assert {:ok, 0} = Modal.ContainerProcess.exit_code(proc())
+    end
+
+    test "wait-deadline re-polls are bounded by the attempt cap" do
+      # Guard against a hot loop if the deadline error keeps coming back
+      # (e.g. an instantly-cancelling channel): 1 initial + 100 re-polls.
+      counter = :counters.new(1, [:atomics])
+
+      Modal.TaskCommandRouter.Mock
+      |> stub(:task_exec_wait, fn :fake_channel, _req, _opts ->
+        :counters.add(counter, 1, 1)
+        {:error, %GRPC.RPCError{status: 1, message: "Timeout expired"}}
+      end)
+
+      assert {:error, %Modal.Error{kind: :grpc, code: 1}} =
+               Modal.ContainerProcess.exit_code(proc())
+
+      assert :counters.get(counter, 1) == 101,
+             "Expected 101 attempts (1 + 100 re-polls), got #{:counters.get(counter, 1)}"
+    end
   end
 
   # ── await/2 ─────────────────────────────────────────────────────
