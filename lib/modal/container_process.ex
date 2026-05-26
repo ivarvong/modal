@@ -627,8 +627,11 @@ defmodule Modal.ContainerProcess do
   defp start_channel_monitor(channel, caller) do
     parent = self()
 
-    pid =
-      spawn(fn ->
+    # Supervised under Modal.WatchdogSupervisor (not a bare `spawn/1`) so a
+    # crash in the monitor is reported rather than silently leaking the
+    # channel it was meant to disconnect. Mirrors Modal.Sandbox's watchdog.
+    {:ok, pid} =
+      Task.Supervisor.start_child(Modal.WatchdogSupervisor, fn ->
         ref = Process.monitor(caller)
         send(parent, {self(), :monitor_ready})
 

@@ -663,8 +663,11 @@ defmodule Modal.Sandbox do
   Internally the sandbox boots with a `sleep infinity` entrypoint and the
   command runs inside via `Modal.Sandbox.exec/3`. The sandbox is always
   terminated on the way out — successful exit, non-zero exit, raise, or
-  caller crash mid-await — so callers don't need to write the try/after
-  themselves.
+  caller exit mid-await. A `try/after` covers the first three; for a
+  brutal `Process.exit(caller, :kill)` (which skips `after`), `run/2`
+  defaults `:terminate_on_caller_exit` to `:silent` so the caller-exit
+  watchdog still reaps the sandbox Modal-side. Either way, callers don't
+  write the `try/after` themselves.
 
   See `run!/2` for the raising variant; see `exec_streaming/3` for the
   same shape against an *existing* sandbox (skips create + terminate).
@@ -683,6 +686,10 @@ defmodule Modal.Sandbox do
       wall-clock timeout in seconds).
     * `:exec_opts` — extra opts to forward to `Modal.Sandbox.exec/3`
       (e.g. `[workdir: "/work"]`).
+    * `:terminate_on_caller_exit` — defaults to `:silent` here so a hard
+      caller kill (which skips the `try/after`) still cleans up. Pass
+      `false` to opt out, or `true` / a log level to surface caller-exit
+      cleanups in the log.
 
   See `run!/2` for a raising variant that bubbles non-zero exits as
   `%Modal.Error{kind: :exec_failed}`.
@@ -699,7 +706,13 @@ defmodule Modal.Sandbox do
 
       # The exec command is what we want to run; the sandbox entrypoint
       # is just a way to keep the box alive long enough to exec into it.
-      create_opts = Keyword.put(opts, :cmd, ["sleep", "infinity"])
+      # Arm the caller-exit watchdog (unless the caller set it) so a
+      # brutal kill mid-run — which skips the `after` below — still
+      # reaps the sandbox. Mirrors `with_sandbox/3`.
+      create_opts =
+        opts
+        |> Keyword.put(:cmd, ["sleep", "infinity"])
+        |> Keyword.put_new(:terminate_on_caller_exit, :silent)
 
       with {:ok, sandbox} <- create(client, create_opts) do
         try do
@@ -1245,8 +1258,13 @@ defmodule Modal.Sandbox do
   defp start_terminate_monitor(%__MODULE__{} = sandbox, caller, log_level) do
     parent = self()
 
-    pid =
-      spawn(fn ->
+    # Run the monitor under the library's Task.Supervisor rather than a
+    # bare `spawn/1`: a crash in here (the watchdog that's supposed to
+    # stop a leak) is then reported through the logger instead of
+    # vanishing silently. The `:monitor_ready` handshake still closes the
+    # race where `caller` exits before `Process.monitor/1` runs.
+    {:ok, pid} =
+      Task.Supervisor.start_child(Modal.WatchdogSupervisor, fn ->
         ref = Process.monitor(caller)
         send(parent, {self(), :monitor_ready})
 
