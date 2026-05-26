@@ -275,7 +275,9 @@ defmodule Modal.RPCTest do
     # snake_case from the documented atom and assert dispatch.
     @canonical_methods [
       AppGetOrCreate: :app_get_or_create,
+      AppList: :app_list,
       AppPublish: :app_publish,
+      AppStop: :app_stop,
       ClassCreate: :class_create,
       ClassGet: :class_get,
       FunctionCallGetDataOut: :function_call_get_data_out,
