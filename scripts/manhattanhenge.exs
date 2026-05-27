@@ -188,20 +188,19 @@ defmodule Manhattanhenge do
     mh = req!(url <> "/manhattanhenge")
     assert_henge!(mh.body["dates"], mh.body["crossings"])
 
-    log(
-      "  /manhattanhenge in #{hdr(mh, "x-compute-ms")}ms  (ephemeris #{hdr(mh, "x-ephemeris")})"
-    )
-
-    # Perf instrumentation: hit /crossing twice — the @lru_cache serves the
-    # repeat as a HIT, so X-Compute-Ms drops to ~0.
-    c1 = req!(url <> "/crossing/2026-05-29")
-    c2 = req!(url <> "/crossing/2026-05-29")
-    assert!(c1.body["date"] == "2026-05-29", "/crossing returned wrong date")
-    assert!(hdr(c1, "x-compute-ms") != "", "X-Compute-Ms header missing")
-    assert!(hdr(c2, "x-cache") == "HIT", "X-Cache: repeat call should be HIT")
+    # Perf instrumentation. A date outside the precomputed May set forces a
+    # real ephemeris compute in the handler (MISS, non-zero X-Compute-Ms);
+    # the @lru_cache serves the repeat instantly (HIT, ~0ms).
+    cold = "2026-06-21"
+    c1 = req!(url <> "/crossing/" <> cold)
+    c2 = req!(url <> "/crossing/" <> cold)
+    assert!(c1.body["date"] == cold, "/crossing returned wrong date")
+    assert!(hdr(c1, "x-cache") == "MISS", "first /crossing should MISS the cache")
+    assert!(hdr(c2, "x-cache") == "HIT", "repeat /crossing should HIT the cache")
 
     log(
-      "  /crossing  #{hdr(c1, "x-cache")} #{hdr(c1, "x-compute-ms")}ms → HIT #{hdr(c2, "x-compute-ms")}ms"
+      "  /crossing #{cold}  MISS #{hdr(c1, "x-compute-ms")}ms (real compute) → " <>
+        "HIT #{hdr(c2, "x-compute-ms")}ms  (ephemeris #{hdr(c1, "x-ephemeris")})"
     )
 
     src = to_string(req!(url <> "/source").body)
