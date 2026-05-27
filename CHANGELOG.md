@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `:volumes` option on `Modal.Function.deploy_asgi/2`, `deploy_web_server/2`,
+  `deploy_function/2`, and `deploy_many/2` — mount `Modal.Volume`s into a
+  deployed function's containers, same shape as `Modal.Sandbox.create/2`'s
+  `:volumes` (`%Modal.Volume{}` structs or `%{id:, path:, read_only:}` maps).
+  Lets a deployed app serve code/data straight from a Volume.
 - `Modal.App.list/2` and `Modal.App.stop/2` (+ `stop!/2`) — list apps in an
   environment (`{:ok, [map]}` with `:app_id`, `:description`, `:state`,
   `:created_at`, `:stopped_at`, `:n_running_tasks`) and stop a deployed app

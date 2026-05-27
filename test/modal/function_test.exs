@@ -235,6 +235,38 @@ defmodule Modal.FunctionTest do
                )
     end
 
+    test "volumes: [%Modal.Volume{}] sets volume_mounts on the Function" do
+      mock_three_rpcs_inspect_function(fn fn_proto ->
+        assert [%Modal.Client.VolumeMount{} = vm] = fn_proto.volume_mounts
+        assert vm.volume_id == "vo-123"
+        assert vm.mount_path == "/work"
+        assert vm.read_only == true
+      end)
+
+      assert {:ok, _} =
+               Modal.Function.deploy_asgi(@client,
+                 app: @app,
+                 name: "web",
+                 image_id: "im",
+                 module: "app",
+                 volumes: [%Modal.Volume{id: "vo-123", path: "/work", read_only: true}]
+               )
+    end
+
+    test "no :volumes leaves volume_mounts at the proto default" do
+      mock_three_rpcs_inspect_function(fn fn_proto ->
+        assert fn_proto.volume_mounts in [nil, []]
+      end)
+
+      assert {:ok, _} =
+               Modal.Function.deploy_asgi(@client,
+                 app: @app,
+                 name: "web",
+                 image_id: "im",
+                 module: "app"
+               )
+    end
+
     test "schedule: {:cron, expr} sets Schedule.Cron" do
       mock_three_rpcs_inspect_function(fn fn_proto ->
         assert %Modal.Client.Schedule{schedule_oneof: {:cron, cron}} = fn_proto.schedule
