@@ -13,10 +13,13 @@
 #     set -a; source .env; set +a     # MODAL_TOKEN_* + ANTHROPIC_API_KEY
 #     elixir scripts/manhattanhenge.exs
 #
-# Azimuth 299.1° is the Manhattan grid's sunset bearing; the reported
-# altitude is apparent (refraction-corrected) — near the horizon refraction
-# (~0.5°) exceeds the Sun's radius (0.27°), so geometric is misleading.
-# May 28 & 29 are the published 2026 dates. See the PR for the full story.
+# Azimuth 299.1° is the Manhattan grid's sunset bearing; the alignment lands
+# at an apparent altitude of ~0.5° — the Sun's a touch above the *true*
+# horizon because NYC's western skyline (the NJ Palisades) sits ~0.5° up.
+# Claude isn't told the dates: it derives them from those az + altitude
+# targets, and they come out to the published May 28 & 29. The reported
+# altitude is apparent (refraction-corrected); geometric is shown for
+# contrast. See the PR for the full story.
 
 Mix.install([
   {:modal, path: Path.expand("..", __DIR__)},
@@ -29,8 +32,12 @@ defmodule Manhattanhenge do
 
   # The Volume that carries Claude's app from the build sandbox to the
   # deployed function. Mounted read-write on the sandbox, read-only on the
-  # function — the handoff happens entirely on Modal.
-  @volume_name "manhattanhenge-app"
+  # function — the handoff happens entirely on Modal. A *fresh* volume per
+  # run (name suffixed with a timestamp) guarantees Claude builds in a clean
+  # room: no chance of finding and patching a prior run's app.py. Stale
+  # volumes from earlier runs are pruned by this prefix once the new deploy
+  # is verified live.
+  @volume_prefix "manhattanhenge-app"
 
   # Model the Claude Code CLI runs the build with.
   @claude_model "claude-sonnet-4-6"
@@ -65,7 +72,14 @@ defmodule Manhattanhenge do
       (`.altaz(temperature_C=10, pressure_mbar=1010)`)
     * `geometric_altitude_deg` — no refraction (plain `.altaz()`), for contrast
 
-  The 2026 Manhattanhenge dates are May 28 & 29 (treat as known).
+  DERIVE the Manhattanhenge dates — do NOT hard-code them. Manhattanhenge is
+  when the Sun, crossing the grid bearing, sits at an apparent altitude of
+  ~0.5°. It's ~0.5° and not 0° because Manhattan's western horizon isn't sea
+  level — the New Jersey Palisades + skyline sit ~0.5° above it. (Use that
+  altitude target; don't model the horizon.) Scan May 2026: for each day
+  compute the az=299.1° crossing and its apparent altitude; the two
+  consecutive evenings that bracket ~0.5° — the last below it and the first
+  above — are Manhattanhenge.
 
   `app.py` exposes a module-level `serve()` returning a FastAPI app (no
   `@modal` decorator, no uvicorn; load the ephemeris once at import). A
@@ -73,7 +87,7 @@ defmodule Manhattanhenge do
   `crossing_edt` (ISO with offset), `apparent_altitude_deg`,
   `geometric_altitude_deg` (altitudes rounded to 2 dp). Routes:
     * `GET /`               -> `{"service","azimuth_deg":299.1,"ephemeris","endpoints"}`
-    * `GET /manhattanhenge`  -> `{"year":2026,"dates":["2026-05-28","2026-05-29"],"crossings":[<crossing>,<crossing>]}`
+    * `GET /manhattanhenge`  -> `{"year":2026,"dates":[…the two derived dates…],"crossings":[<crossing> per date]}`
     * `GET /crossing/{date}` -> one crossing dict; 422 on a bad date
     * `GET /source`          -> this app's own source code as `text/plain`
                                 (read `__file__`) — a peek at exactly what's
@@ -103,12 +117,19 @@ defmodule Manhattanhenge do
     log("app: #{inspect(app)}")
 
     base_image = build_base_image!(client, app)
-    {:ok, vol_id} = Modal.Volume.get_or_create(client, @volume_name, app: app)
+
+    # A fresh, uniquely-named volume per run — empty by construction, so
+    # Claude can only build from scratch (no stale app.py to patch).
+    volume_name = "#{@volume_prefix}-#{System.os_time(:second)}"
+    {:ok, vol_id} = Modal.Volume.get_or_create(client, volume_name, app: app)
     secret_id = ephemeral_secret!(client, app, anthropic_key)
 
     build_on_volume!(client, app, base_image, vol_id, secret_id)
     web = deploy!(client, app, base_image, vol_id)
     verify!(web)
+
+    # The new deploy is live on vol_id; now retire prior runs' volumes.
+    prune_stale_volumes!(client, vol_id)
 
     print_summary(web)
   end
@@ -167,25 +188,21 @@ defmodule Manhattanhenge do
         workdir: @workdir,
         secret_ids: [secret_id],
         volumes: [%Modal.Volume{id: vol_id, path: @workdir}],
-        # Claude Code (Node) is memory-hungry — especially streaming a
-        # verbose session — and OOM-kills (exit 137) with less. Give it room.
-        memory_mb: 8192,
+        # The build (Claude + python smoke-tests loading the ephemeris) peaks
+        # under ~1 GiB; 4 GiB is comfortable headroom.
+        memory_mb: 4_096,
+        # 30-min wall-clock cap. The build's real ceiling is the per-exec
+        # timeout below; this is the sandbox backstop.
         timeout_secs: 1_800,
-        idle_timeout_secs: 60,
+        # 15-min idle timeout reaps a wedged sandbox well before the hard cap;
+        # a normal build is never idle that long. terminate_on_caller_exit
+        # cleans up the instant this script exits (success or crash).
+        idle_timeout_secs: 900,
         terminate_on_caller_exit: :silent
       )
 
     {:ok, _task_id} = Modal.Sandbox.get_task_id(sandbox)
-    log("  sandbox #{sandbox.id}, Volume mounted read-write at #{@workdir}")
-
-    # Clean room: the Volume persists across runs, so wipe any prior build
-    # before Claude starts — otherwise it finds the last run's app.py and
-    # patches it instead of writing fresh.
-    Modal.Sandbox.exec_streaming!(sandbox, [
-      "bash",
-      "-c",
-      "find #{@workdir} -mindepth 1 -delete 2>/dev/null; true"
-    ])
+    log("  sandbox #{sandbox.id}, fresh Volume mounted read-write at #{@workdir}")
 
     # SPEC.md goes in /work — Claude (acceptEdits) is sandboxed to its
     # working dir, so a spec under /tmp would be unreadable. It lands on the
@@ -199,27 +216,44 @@ defmodule Manhattanhenge do
         "and the DE440 ephemeris are already installed. Smoke-test before " <>
         "finishing: `python3 -c 'from app import serve; serve()'` must run clean."
 
-    # PTY: claude needs a terminal (and refuses --dangerously-skip-permissions
-    # as root). `--allowedTools Bash` lets it run python to smoke-test its own
-    # app (acceptEdits alone blocks Bash). `--output-format stream-json
-    # --verbose` emits one JSON event per turn — a transcript we render + save
-    # — plus a final event with total_cost_usd. Raises on a non-zero exit.
+    # --output-format stream-json --verbose: one JSON event per line,
+    # emitted as the session unfolds — so we render Claude's turns live
+    # (the alternative, plain json, stays silent until the very end). The
+    # last event carries total_cost_usd. --allowedTools Bash lets it run
+    # python to smoke-test its own app; `< /dev/null` skips the stdin wait.
     cmd =
       "cd #{@workdir} && claude -p #{shell_escape(prompt)} " <>
         "--permission-mode acceptEdits --allowedTools Bash --model #{@claude_model} " <>
-        "--output-format stream-json --verbose 2>&1"
+        "--output-format stream-json --verbose < /dev/null 2>&1"
 
-    log("  $ claude -p <spec> --model #{@claude_model}  (writing app.py, a few min)…")
+    log("  $ claude -p <spec> --model #{@claude_model}")
+    log("  ── Claude session transcript (live) ──────────────")
     t = now()
 
-    result =
-      Modal.Sandbox.exec_streaming!(sandbox, ["bash", "-c", cmd],
-        exec_opts: [pty: true],
-        timeout: :infinity
+    # Non-bang exec + on_stdout: stream each event to the console as it
+    # arrives, and keep everything in :stdout. On a non-zero exit we still
+    # hold the transcript up to that point — exec_streaming! would have
+    # raised it away.
+    #
+    # exec_opts: [timeout_secs: …] is load-bearing: the worker-side exec
+    # timeout defaults to 300s and SIGKILLs the exec (exit 137, sandbox
+    # untouched) when a from-scratch build runs longer. Match it to the
+    # sandbox's wall-clock cap. (The await :timeout is separate.)
+    {:ok, %{stdout: raw, code: code}} =
+      Modal.Sandbox.exec_streaming(sandbox, ["bash", "-c", cmd],
+        timeout: :infinity,
+        exec_opts: [timeout_secs: 1_800],
+        on_stdout: Modal.ContainerProcess.line_buffered(&render_event_line/1)
       )
 
-    transcript = strip_ansi(result.stdout)
-    log("  ✓ Claude finished (#{elapsed(t)})#{render_transcript_and_cost!(transcript)}")
+    transcript = strip_ansi(raw)
+    File.mkdir_p!(@artifact_dir)
+    File.write!(@transcript_file, transcript)
+
+    if code != 0,
+      do: raise("claude build exited #{code}; partial transcript at #{@transcript_file}")
+
+    log("  ✓ Claude finished (#{elapsed(t)})#{cost_summary(transcript)}")
 
     # Put the session transcript on the Volume too, so the deployed app can
     # serve it (GET /transcript) right next to its own source.
@@ -287,6 +321,22 @@ defmodule Manhattanhenge do
 
     log("  ✓ deployed: #{web.web_url} (#{elapsed(t)})")
     web
+  end
+
+  # Retire build volumes from earlier runs — every run mints a fresh one,
+  # so without this they'd pile up. `Modal.Volume.list/2` enumerates them;
+  # we keep the volume backing the deploy we just verified and delete the
+  # rest by name prefix.
+  defp prune_stale_volumes!(client, keep_id) do
+    {:ok, vols} = Modal.Volume.list(client)
+
+    stale =
+      Enum.filter(vols, fn v ->
+        String.starts_with?(v.name, @volume_prefix) and v.volume_id != keep_id
+      end)
+
+    Enum.each(stale, &Modal.Volume.delete(client, &1.volume_id))
+    if stale != [], do: log("  ✓ pruned #{length(stale)} stale build volume(s)")
   end
 
   # ── STAGE 3 — VERIFY: smoke-test + correctness on the live endpoint ─
@@ -368,33 +418,35 @@ defmodule Manhattanhenge do
 
   # ── helpers ───────────────────────────────────────────────────────
 
-  # Render claude's stream-json session as a readable transcript, save the
-  # raw events, and return a " — $cost, N turns" suffix from the result event.
-  defp render_transcript_and_cost!(raw) do
-    File.mkdir_p!(@artifact_dir)
-    File.write!(@transcript_file, raw)
+  # Render one stream-json line (fired live per `\n` as claude emits events).
+  # Non-JSON lines (a stray warning, or an OOM truncating mid-line) are skipped.
+  defp render_event_line(line) do
+    cond do
+      String.contains?(line, "(MEM)") ->
+        log("  " <> String.trim(line))
 
-    events =
-      raw
-      |> String.split("\n", trim: true)
-      |> Enum.flat_map(fn line ->
+      true ->
         case JSON.decode(String.trim(line)) do
-          {:ok, ev} when is_map(ev) -> [ev]
-          _ -> []
+          {:ok, ev} when is_map(ev) -> render_event(ev)
+          _ -> :ok
         end
-      end)
-
-    log("  ── Claude session transcript ──────────────")
-    Enum.each(events, &render_event/1)
-    log("  ── (full session-json: #{@transcript_file}) ──")
-
-    case Enum.find(events, &(&1["type"] == "result")) do
-      %{"total_cost_usd" => c} = r ->
-        "  —  $#{:erlang.float_to_binary(c / 1, decimals: 4)}, #{r["num_turns"] || "?"} turns"
-
-      _ ->
-        "  (cost: unavailable)"
     end
+  end
+
+  # The stream's final `result` event carries the run cost + turn count.
+  defp cost_summary(transcript) do
+    transcript
+    |> String.split("\n", trim: true)
+    |> Enum.reverse()
+    |> Enum.find_value(fn line ->
+      case JSON.decode(String.trim(line)) do
+        {:ok, %{"type" => "result", "total_cost_usd" => c} = r} ->
+          "  —  $#{:erlang.float_to_binary(c / 1, decimals: 4)}, #{r["num_turns"] || "?"} turns"
+
+        _ ->
+          nil
+      end
+    end) || "  (cost: unavailable)"
   end
 
   defp render_event(%{"type" => "system", "subtype" => "init"} = ev),
