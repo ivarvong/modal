@@ -950,9 +950,7 @@ defmodule Modal.SandboxTest do
     test "raises :exec_failed on non-zero exit, with stdout/stderr in metadata" do
       err =
         assert_raise Modal.Error, fn ->
-          Modal.Sandbox.raise_on_failure!(
-            {:ok, %{stdout: "partial\n", stderr: "boom\n", code: 42}}
-          )
+          Modal.Sandbox.raise_on_failure!({:ok, %{stdout: "partial\n", stderr: "boom\n", code: 42}})
         end
 
       assert err.kind == :exec_failed
@@ -967,9 +965,7 @@ defmodule Modal.SandboxTest do
     test "raises :exec_unknown_status when code is nil (worker didn't report)" do
       err =
         assert_raise Modal.Error, fn ->
-          Modal.Sandbox.raise_on_failure!(
-            {:ok, %{stdout: "started\n", stderr: "killed: 9\n", code: nil}}
-          )
+          Modal.Sandbox.raise_on_failure!({:ok, %{stdout: "started\n", stderr: "killed: 9\n", code: nil}})
         end
 
       assert err.kind == :exec_unknown_status

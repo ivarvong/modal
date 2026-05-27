@@ -683,12 +683,7 @@ defmodule Modal.FunctionTest do
       # value; the terminator is a chunk with
       # `data_format: DATA_FORMAT_GENERATOR_DONE`.
       Modal.Client.Mock
-      |> expect(:stream_rpc_reduce, fn _client,
-                                       :function_call_get_data_out,
-                                       req,
-                                       acc,
-                                       reducer,
-                                       _timeout ->
+      |> expect(:stream_rpc_reduce, fn _client, :function_call_get_data_out, req, acc, reducer, _timeout ->
         # Required call info — cursor begins at last_index 0.
         assert {:function_call_id, "fc-stream"} = req.call_info
         assert req.last_index == 0
@@ -737,12 +732,7 @@ defmodule Modal.FunctionTest do
       # error + stream/2's documented raise-on-error contract) rather
       # than vanishing and handing back a gappy result.
       Modal.Client.Mock
-      |> expect(:stream_rpc_reduce, fn _client,
-                                       :function_call_get_data_out,
-                                       _req,
-                                       acc,
-                                       reducer,
-                                       _timeout ->
+      |> expect(:stream_rpc_reduce, fn _client, :function_call_get_data_out, _req, acc, reducer, _timeout ->
         chunks = [
           %Modal.Client.DataChunk{
             data_format: :DATA_FORMAT_PICKLE,
@@ -785,12 +775,7 @@ defmodule Modal.FunctionTest do
       # GENERATOR_DONE terminator. The failure lives in FunctionGetOutputs;
       # stream/2 must poll it and raise, not hand back a silent [].
       Modal.Client.Mock
-      |> expect(:stream_rpc_reduce, fn _client,
-                                       :function_call_get_data_out,
-                                       _req,
-                                       acc,
-                                       _reducer,
-                                       _timeout ->
+      |> expect(:stream_rpc_reduce, fn _client, :function_call_get_data_out, _req, acc, _reducer, _timeout ->
         # No chunks, no GENERATOR_DONE — return the initial accumulator.
         {:ok, acc}
       end)
@@ -824,12 +809,7 @@ defmodule Modal.FunctionTest do
       # Some values arrive, then the generator raises — the stream closes with
       # no GENERATOR_DONE. We must surface the failure, not the partial list.
       Modal.Client.Mock
-      |> expect(:stream_rpc_reduce, fn _client,
-                                       :function_call_get_data_out,
-                                       _req,
-                                       acc,
-                                       reducer,
-                                       _timeout ->
+      |> expect(:stream_rpc_reduce, fn _client, :function_call_get_data_out, _req, acc, reducer, _timeout ->
         chunks = [
           %Modal.Client.DataChunk{
             data_format: :DATA_FORMAT_PICKLE,

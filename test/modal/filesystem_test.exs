@@ -40,12 +40,7 @@ defmodule Modal.FilesystemTest do
 
   defp expect_fs_wait_ok(exec_id \\ "fx-1") do
     Modal.Client.Mock
-    |> expect(:stream_rpc_reduce, fn _,
-                                     :container_filesystem_exec_get_output,
-                                     req,
-                                     init,
-                                     _reducer,
-                                     _ ->
+    |> expect(:stream_rpc_reduce, fn _, :container_filesystem_exec_get_output, req, init, _reducer, _ ->
       assert req.exec_id == exec_id
       {:ok, init}
     end)
@@ -58,8 +53,7 @@ defmodule Modal.FilesystemTest do
       Modal.Client.Mock
       # open
       |> expect(:rpc, fn _, :container_filesystem_exec, req, _ ->
-        assert {:file_open_request,
-                %Modal.Client.ContainerFileOpenRequest{path: "/a.txt", mode: "r"}} =
+        assert {:file_open_request, %Modal.Client.ContainerFileOpenRequest{path: "/a.txt", mode: "r"}} =
                  req.file_exec_request_oneof
 
         {:ok,
@@ -73,18 +67,12 @@ defmodule Modal.FilesystemTest do
       end)
       # read
       |> expect(:rpc, fn _, :container_filesystem_exec, req, _ ->
-        assert {:file_read_request,
-                %Modal.Client.ContainerFileReadRequest{file_descriptor: "fd-1"}} =
+        assert {:file_read_request, %Modal.Client.ContainerFileReadRequest{file_descriptor: "fd-1"}} =
                  req.file_exec_request_oneof
 
         {:ok, %Modal.Client.ContainerFilesystemExecResponse{exec_id: "fx-read"}}
       end)
-      |> expect(:stream_rpc_reduce, fn _,
-                                       :container_filesystem_exec_get_output,
-                                       _,
-                                       init,
-                                       reducer,
-                                       _ ->
+      |> expect(:stream_rpc_reduce, fn _, :container_filesystem_exec_get_output, _, init, reducer, _ ->
         batch = %Modal.Client.FilesystemRuntimeOutputBatch{
           output: ["hello"],
           eof: true,
@@ -117,12 +105,7 @@ defmodule Modal.FilesystemTest do
 
         {:ok, %Modal.Client.ContainerFilesystemExecResponse{exec_id: "fx", file_descriptor: fd}}
       end)
-      |> stub(:stream_rpc_reduce, fn _,
-                                     :container_filesystem_exec_get_output,
-                                     _,
-                                     init,
-                                     reducer,
-                                     _ ->
+      |> stub(:stream_rpc_reduce, fn _, :container_filesystem_exec_get_output, _, init, reducer, _ ->
         batch = %Modal.Client.FilesystemRuntimeOutputBatch{
           output: ["bytes"],
           eof: true,
@@ -147,12 +130,7 @@ defmodule Modal.FilesystemTest do
       end)
 
       Modal.Client.Mock
-      |> expect(:stream_rpc_reduce, fn _,
-                                       :container_filesystem_exec_get_output,
-                                       _,
-                                       init,
-                                       reducer,
-                                       _ ->
+      |> expect(:stream_rpc_reduce, fn _, :container_filesystem_exec_get_output, _, init, reducer, _ ->
         json = ~s|{"paths": ["foo.txt", "bar/"]}|
         batch = %Modal.Client.FilesystemRuntimeOutputBatch{output: [json], eof: true, error: nil}
         {:halt, acc} = reducer.(batch, init)
@@ -168,12 +146,7 @@ defmodule Modal.FilesystemTest do
       expect_fs_call(fn _ -> :ok end)
 
       Modal.Client.Mock
-      |> expect(:stream_rpc_reduce, fn _,
-                                       :container_filesystem_exec_get_output,
-                                       _,
-                                       init,
-                                       reducer,
-                                       _ ->
+      |> expect(:stream_rpc_reduce, fn _, :container_filesystem_exec_get_output, _, init, reducer, _ ->
         batch = %Modal.Client.FilesystemRuntimeOutputBatch{
           output: ["a.txt\nb.txt\n"],
           eof: true,
@@ -191,12 +164,7 @@ defmodule Modal.FilesystemTest do
       expect_fs_call(fn _ -> :ok end)
 
       Modal.Client.Mock
-      |> expect(:stream_rpc_reduce, fn _,
-                                       :container_filesystem_exec_get_output,
-                                       _,
-                                       init,
-                                       reducer,
-                                       _ ->
+      |> expect(:stream_rpc_reduce, fn _, :container_filesystem_exec_get_output, _, init, reducer, _ ->
         batch = %Modal.Client.FilesystemRuntimeOutputBatch{
           output: [],
           eof: true,
@@ -217,8 +185,7 @@ defmodule Modal.FilesystemTest do
   describe "mkdir/3" do
     test "default `parents: true` propagates to the proto" do
       expect_fs_call(fn req ->
-        assert {:file_mkdir_request,
-                %Modal.Client.ContainerFileMkdirRequest{path: "/x/y/z", make_parents: true}} =
+        assert {:file_mkdir_request, %Modal.Client.ContainerFileMkdirRequest{path: "/x/y/z", make_parents: true}} =
                  req.file_exec_request_oneof
       end)
 
@@ -229,8 +196,7 @@ defmodule Modal.FilesystemTest do
 
     test "`parents: false` is honored" do
       expect_fs_call(fn req ->
-        assert {:file_mkdir_request,
-                %Modal.Client.ContainerFileMkdirRequest{path: "/x", make_parents: false}} =
+        assert {:file_mkdir_request, %Modal.Client.ContainerFileMkdirRequest{path: "/x", make_parents: false}} =
                  req.file_exec_request_oneof
       end)
 
@@ -245,8 +211,7 @@ defmodule Modal.FilesystemTest do
   describe "rm/3" do
     test "default is non-recursive" do
       expect_fs_call(fn req ->
-        assert {:file_rm_request,
-                %Modal.Client.ContainerFileRmRequest{path: "/x", recursive: false}} =
+        assert {:file_rm_request, %Modal.Client.ContainerFileRmRequest{path: "/x", recursive: false}} =
                  req.file_exec_request_oneof
       end)
 
@@ -257,8 +222,7 @@ defmodule Modal.FilesystemTest do
 
     test "`recursive: true` is honored" do
       expect_fs_call(fn req ->
-        assert {:file_rm_request,
-                %Modal.Client.ContainerFileRmRequest{path: "/x", recursive: true}} =
+        assert {:file_rm_request, %Modal.Client.ContainerFileRmRequest{path: "/x", recursive: true}} =
                  req.file_exec_request_oneof
       end)
 

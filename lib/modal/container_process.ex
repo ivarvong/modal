@@ -763,10 +763,7 @@ defmodule Modal.ContainerProcess do
            ),
          {:ok, channel} <-
            GRPC.Stub.connect(resp.url,
-             cred:
-               GRPC.Credential.new(
-                 ssl: [cacertfile: CAStore.file_path(), verify: :verify_peer, depth: 4]
-               ),
+             cred: GRPC.Credential.new(ssl: [cacertfile: CAStore.file_path(), verify: :verify_peer, depth: 4]),
              headers: [{"authorization", "Bearer #{resp.jwt}"}]
            ) do
       {:ok, channel, resp.jwt}
