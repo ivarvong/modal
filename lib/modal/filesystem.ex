@@ -256,8 +256,7 @@ defmodule Modal.Filesystem do
     |> chunk_binary()
     |> Enum.reduce_while(:ok, fn chunk, :ok ->
       oneof =
-        {:file_write_request,
-         %Modal.Client.ContainerFileWriteRequest{file_descriptor: fd, data: chunk}}
+        {:file_write_request, %Modal.Client.ContainerFileWriteRequest{file_descriptor: fd, data: chunk}}
 
       with {:ok, resp} <- fs_call(client, task_id, oneof),
            {:ok, _} <- fs_wait(client, resp.exec_id) do

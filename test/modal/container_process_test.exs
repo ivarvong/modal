@@ -45,9 +45,7 @@ defmodule Modal.ContainerProcessTest do
 
     test ":timeout_secs passes through when given" do
       req =
-        Modal.ContainerProcess.exec_start_request("ti-1", "ex-1", ["sleep", "9000"],
-          timeout_secs: 1_800
-        )
+        Modal.ContainerProcess.exec_start_request("ti-1", "ex-1", ["sleep", "9000"], timeout_secs: 1_800)
 
       assert req.timeout_secs == 1_800
     end

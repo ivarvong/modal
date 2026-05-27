@@ -175,8 +175,7 @@ defmodule Modal.Function do
     idle_timeout_secs: [
       type: :pos_integer,
       default: 300,
-      doc:
-        "Container scale-down delay in seconds. Lower → tighter cost; higher → fewer cold starts."
+      doc: "Container scale-down delay in seconds. Lower → tighter cost; higher → fewer cold starts."
     ],
     requires_proxy_auth: [
       type: :boolean,
@@ -533,8 +532,7 @@ defmodule Modal.Function do
   defp deploy_kind(_client, kind, _opts) do
     {:error,
      Modal.Error.validation(%NimbleOptions.ValidationError{
-       message:
-         "deploy_many/2: unknown kind #{inspect(kind)}, expected :asgi | :web_server | :function",
+       message: "deploy_many/2: unknown kind #{inspect(kind)}, expected :asgi | :web_server | :function",
        key: :kind,
        value: kind,
        keys_path: []
@@ -978,25 +976,20 @@ defmodule Modal.Function do
             {:ok, Modal.Pickle.decode!(bytes)}
 
           {:data_blob_id, blob_id} ->
-            {:error,
-             Modal.Error.function_failed(
-               "result stored in blob #{blob_id}; blob-fetch not yet implemented"
-             )}
+            {:error, Modal.Error.function_failed("result stored in blob #{blob_id}; blob-fetch not yet implemented")}
 
           nil ->
             {:ok, nil}
         end
 
       :GENERIC_STATUS_FAILURE ->
-        {:error,
-         Modal.Error.function_failed(result.exception || "(no message)", result.traceback)}
+        {:error, Modal.Error.function_failed(result.exception || "(no message)", result.traceback)}
 
       :GENERIC_STATUS_TIMEOUT ->
         {:error, Modal.Error.timeout()}
 
       other ->
-        {:error,
-         Modal.Error.function_failed("unexpected function status: #{other}", result.traceback)}
+        {:error, Modal.Error.function_failed("unexpected function status: #{other}", result.traceback)}
     end
   end
 
@@ -1235,9 +1228,7 @@ defmodule Modal.Function do
     do: {:ok, {:cron, expr, opts}}
 
   def validate_schedule(other),
-    do:
-      {:error,
-       "expected {:period, opts} | {:cron, expr} | {:cron, expr, opts}, got #{inspect(other)}"}
+    do: {:error, "expected {:period, opts} | {:cron, expr} | {:cron, expr, opts}, got #{inspect(other)}"}
 
   defp validate_opts(opts, schema) do
     case NimbleOptions.validate(opts, schema) do
