@@ -1139,7 +1139,9 @@ defmodule Modal.Function do
   # structs (preferred) or `{id, path}`-bearing maps. Empty -> nil so
   # `maybe_put/3` leaves `volume_mounts` unset.
   defp build_volume_mounts(volumes) when volumes in [nil, []], do: nil
-  defp build_volume_mounts(volumes) when is_list(volumes), do: Enum.map(volumes, &build_volume_mount/1)
+
+  defp build_volume_mounts(volumes) when is_list(volumes),
+    do: Enum.map(volumes, &build_volume_mount/1)
 
   defp build_volume_mount(%Modal.Volume{} = v) do
     %VolumeMount{volume_id: v.id, mount_path: v.path, read_only: v.read_only}
