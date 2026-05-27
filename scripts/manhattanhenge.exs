@@ -66,7 +66,7 @@ defmodule Manhattanhenge do
     image = base_image!(client, app)
     # A fresh, uniquely-named volume per run is empty by construction, so Claude
     # builds from scratch (no stale app.py to patch).
-    vol = Modal.Volume.get_or_create!(client, "#{@volume_prefix}-#{run_id}", app: app)
+    vol = Modal.Volume.get_or_create!(client, "#{@volume_prefix}-#{run_id}")
 
     # Ephemeral means Modal ties the secret to this client session instead of
     # leaving named per-run secrets behind. Agent demos should not accumulate
@@ -143,15 +143,22 @@ defmodule Manhattanhenge do
       # timeout: :infinity — wait out the whole build (~400-510s). No per-exec
       # timeout_secs: the exec is bounded only by the sandbox's own timeout_secs
       # (1800s above). (Modal.Sandbox.exec/3 no longer caps execs at 300s.)
-      result = Modal.Sandbox.exec_streaming!(sb, ["bash", "-c", cmd], timeout: :infinity)
+      #
+      # Capture (don't bang): a non-zero Claude exit still returns {:ok, result},
+      # so we write the transcript BEFORE gating on the exit code — a failed run
+      # is exactly when this debug artifact matters most.
+      {:ok, result} = Modal.Sandbox.exec_streaming(sb, ["bash", "-c", cmd], timeout: :infinity)
 
       File.write!(@transcript_file, result.stdout)
+      assert!(result.code == 0, "claude build failed (exit #{inspect(result.code)}) — see #{@transcript_file}")
       log("  ✓ Claude finished (#{elapsed(t)})#{cost_summary(result.stdout)}")
 
       # The orchestrator, not the agent, owns the acceptance gate. This catches
       # "Claude said it tested" failures before deploy and makes the demo's trust
       # boundary explicit.
-      smoke = Modal.Sandbox.exec_streaming!(sb, ["python3", "-c", "from app import serve; serve()"], timeout: 120_000)
+      {:ok, smoke} =
+        Modal.Sandbox.exec_streaming(sb, ["python3", "-c", "from app import serve; serve()"], timeout: 120_000)
+
       assert!(smoke.code == 0, "orchestrator smoke test failed")
       log("  ✓ orchestrator smoke-test passed")
 
@@ -242,10 +249,11 @@ defmodule Manhattanhenge do
 
   # Each run mints a fresh volume; retire EARLIER ones (their deploys have been
   # replaced), keeping the volume the just-verified deploy serves from. Only
-  # touch volumes older than 10 min, so a concurrent run's fresh volume is
-  # safe. Best-effort and last — housekeeping must never fail a green deploy.
+  # touch volumes older than the build window (1800s — the build sandbox's
+  # timeout_secs), so a concurrent run's still-in-use volume can't age into the
+  # prune set. Best-effort and last — housekeeping must never fail a green deploy.
   defp prune_stale_volumes!(client, keep_id) do
-    cutoff = System.os_time(:second) - 600
+    cutoff = System.os_time(:second) - 1_800
 
     with {:ok, vols} <- Modal.Volume.list(client) do
       stale =
