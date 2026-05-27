@@ -47,12 +47,9 @@ defmodule Manhattanhenge do
     * `GET /manhattanhenge`  -> {"year":2026,"dates":[…derived…],"crossings":[…]}
     * `GET /crossing/{date}` -> one crossing dict; 422 on bad/out-of-range/no-crossing
     * `GET /source`          -> this file's own source, text/plain (read `__file__`)
-    * `GET /transcript`      -> `transcript.jsonl` next to this file, text/plain
-                                (a short note if absent)
 
-  Instrument every response with `X-Ephemeris: DE440s` and `X-Compute-Ms` (ms
-  spent computing the body); add `X-Cache: HIT|MISS` to `/crossing/{date}` —
-  MISS when computed, HIT when `@lru_cache` serves it.
+  Add an `X-Compute-Ms` response header — the milliseconds spent computing the
+  body — so the per-request compute cost is visible to any caller.
 
   Production-grade: `zoneinfo("America/New_York")` for DST-correct local time;
   validate `/crossing/{date}` (4xx on unparseable / out-of-DE440-range / no
@@ -64,28 +61,34 @@ defmodule Manhattanhenge do
     key = System.get_env("ANTHROPIC_API_KEY") || raise("set ANTHROPIC_API_KEY (source .env)")
     {:ok, client} = Modal.Client.start_link(Modal.Credentials.load!())
     {:ok, app} = Modal.App.lookup(client, @app_name)
+    run_id = run_id()
 
     image = base_image!(client, app)
     # A fresh, uniquely-named volume per run is empty by construction, so Claude
     # builds from scratch (no stale app.py to patch).
-    vol =
-      Modal.Volume.get_or_create!(client, "#{@volume_prefix}-#{System.os_time(:second)}",
-        app: app
-      )
+    vol = Modal.Volume.get_or_create!(client, "#{@volume_prefix}-#{run_id}", app: app)
 
+    # Ephemeral means Modal ties the secret to this client session instead of
+    # leaving named per-run secrets behind. Agent demos should not accumulate
+    # credentials as historical artifacts.
     secret =
       Modal.Secret.create!(client,
         app: app,
-        name: "henge-key-#{System.os_time(:second)}",
-        env: %{"ANTHROPIC_API_KEY" => key}
+        name: "henge-key-#{run_id}",
+        env: %{"ANTHROPIC_API_KEY" => key},
+        if_exists: :ephemeral
       )
 
-    build!(client, app, image, vol, secret)
-    web = deploy!(client, app, image, vol)
-    verify!(web)
-    # The deploy is live on `vol`; retire prior runs' volumes (theirs are replaced).
-    prune_stale_volumes!(client, vol)
-    summary(web)
+    try do
+      build!(client, app, image, vol, secret)
+      web = deploy!(client, app, image, vol)
+      verify!(web)
+      # The deploy is live on `vol`; retire prior runs' volumes (theirs are replaced).
+      prune_stale_volumes!(client, vol)
+      summary(web)
+    after
+      Modal.Secret.delete(client, secret)
+    end
   end
 
   # Base image: Claude CLI + uv + Skyfield + DE440. Content-addressed (cache-hits);
@@ -110,45 +113,54 @@ defmodule Manhattanhenge do
         workdir: @workdir,
         secret_ids: [secret],
         volumes: [%Modal.Volume{id: vol, path: @workdir}],
+        cpu: 4.0,
         memory_mb: 4_096,
         timeout_secs: 1_800,
         idle_timeout_secs: 900,
         terminate_on_caller_exit: :silent
       )
 
-    {:ok, _} = Modal.Sandbox.get_task_id(sb)
-    Modal.Filesystem.write_file!(sb, "#{@workdir}/SPEC.md", @spec_md)
+    try do
+      {:ok, _} = Modal.Sandbox.get_task_id(sb)
+      Modal.Filesystem.write_file!(sb, "#{@workdir}/SPEC.md", @spec_md)
 
-    prompt =
-      "Read SPEC.md here and implement it exactly: write app.py in #{@workdir} " <>
-        "matching serve(), the routes, headers, and JSON shape. skyfield / fastapi / " <>
-        "uvicorn / numpy and the DE440 ephemeris are installed. Smoke-test before " <>
-        "finishing: `python3 -c 'from app import serve; serve()'` must run clean."
+      prompt =
+        "Read SPEC.md here and implement it exactly: write app.py in #{@workdir} " <>
+          "matching serve(), the routes, headers, and JSON shape. skyfield / fastapi / " <>
+          "uvicorn / numpy and the DE440 ephemeris are installed. Smoke-test before " <>
+          "finishing: `python3 -c 'from app import serve; serve()'` must run clean."
 
-    # stream-json --verbose records every turn (we save + serve it). headless
-    # `-p` needs no PTY; `< /dev/null` skips the stdin-wait warning.
-    cmd =
-      "cd #{@workdir} && claude -p #{esc(prompt)} --permission-mode acceptEdits " <>
-        "--allowedTools Bash --model #{@claude_model} --output-format stream-json " <>
-        "--verbose < /dev/null 2>&1"
+      # stream-json --verbose records every turn (we save locally). headless
+      # `-p` needs no PTY; `< /dev/null` skips the stdin-wait warning.
+      cmd =
+        "cd #{@workdir} && claude -p #{esc(prompt)} --permission-mode acceptEdits " <>
+          "--allowedTools Bash --model #{@claude_model} --output-format stream-json " <>
+          "--verbose < /dev/null 2>&1"
 
-    log("  $ claude -p <spec> --model #{@claude_model}  (deriving + writing, ~5 min)…")
-    t = now()
+      log("  $ claude -p <spec> --model #{@claude_model}  (deriving + writing, ~5 min)…")
+      t = now()
 
-    # exec_opts timeout_secs is load-bearing: the per-exec default is 300s and
-    # SIGKILLs a longer build (exit 137, sandbox untouched). Match the sandbox cap.
-    result =
-      Modal.Sandbox.exec_streaming!(sb, ["bash", "-c", cmd],
-        timeout: :infinity,
-        exec_opts: [timeout_secs: 1_800]
-      )
+      # timeout: :infinity — wait out the whole build (~400-510s). No per-exec
+      # timeout_secs: the exec is bounded only by the sandbox's own timeout_secs
+      # (1800s above). (Modal.Sandbox.exec/3 no longer caps execs at 300s.)
+      result = Modal.Sandbox.exec_streaming!(sb, ["bash", "-c", cmd], timeout: :infinity)
 
-    File.write!(@transcript_file, result.stdout)
-    log("  ✓ Claude finished (#{elapsed(t)})#{cost_summary(result.stdout)}")
+      File.write!(@transcript_file, result.stdout)
+      log("  ✓ Claude finished (#{elapsed(t)})#{cost_summary(result.stdout)}")
 
-    # Serve the session next to the app: write it onto the Volume too.
-    Modal.Filesystem.write_file!(sb, "#{@workdir}/transcript.jsonl", result.stdout)
-    Modal.Sandbox.terminate(sb)
+      # The orchestrator, not the agent, owns the acceptance gate. This catches
+      # "Claude said it tested" failures before deploy and makes the demo's trust
+      # boundary explicit.
+      smoke = Modal.Sandbox.exec_streaming!(sb, ["python3", "-c", "from app import serve; serve()"], timeout: 120_000)
+      assert!(smoke.code == 0, "orchestrator smoke test failed")
+      log("  ✓ orchestrator smoke-test passed")
+
+      # Keep the agent transcript local for cost/debugging; do not publish it with
+      # the generated app. Transcripts are useful audit artifacts, but they are
+      # also an easy place to leak env dumps, paths, or future tool output.
+    after
+      Modal.Sandbox.terminate(sb)
+    end
 
     app_py = volume_file!(client, vol, "/app.py")
     log("  ✓ Volume committed (app.py #{byte_size(app_py)}B)")
@@ -177,83 +189,75 @@ defmodule Manhattanhenge do
     web
   end
 
-  # STAGE 3 — VERIFY: curl the live endpoint — correctness + the X- perf headers.
+  # STAGE 3 — VERIFY: curl the live endpoint and check the math.
   defp verify!(%Modal.Function{web_url: url}) do
     log_header("STAGE 3 — VERIFY: live endpoint")
 
     root = req!(url <> "/")
-    assert!(root.body["azimuth_deg"] == 299.1, "azimuth != 299.1")
-    assert!(hdr(root, "x-ephemeris") == "DE440s", "X-Ephemeris header missing")
+    assert!(root.body["azimuth_deg"] == 299.1, "azimuth_deg != 299.1")
 
+    # The math: the two derived days, each crossing the grid bearing at ~8:1x
+    # PM EDT, at the refraction-corrected apparent altitude.
     mh = req!(url <> "/manhattanhenge")
     assert_henge!(mh.body["dates"], mh.body["crossings"])
 
-    # Perf instrumentation. A date outside the precomputed May set forces a
-    # real ephemeris compute in the handler (MISS, non-zero X-Compute-Ms);
-    # the @lru_cache serves the repeat instantly (HIT, ~0ms).
-    cold = "2026-06-21"
-    c1 = req!(url <> "/crossing/" <> cold)
-    c2 = req!(url <> "/crossing/" <> cold)
-    assert!(c1.body["date"] == cold, "/crossing returned wrong date")
-    assert!(hdr(c1, "x-cache") == "MISS", "first /crossing should MISS the cache")
-    assert!(hdr(c2, "x-cache") == "HIT", "repeat /crossing should HIT the cache")
-
-    log(
-      "  /crossing #{cold}  MISS #{hdr(c1, "x-compute-ms")}ms (real compute) → " <>
-        "HIT #{hdr(c2, "x-compute-ms")}ms  (ephemeris #{hdr(c1, "x-ephemeris")})"
-    )
+    # The single-date route recomputes a crossing on demand.
+    one = req!(url <> "/crossing/2026-05-29")
+    assert!(one.body["date"] == "2026-05-29", "/crossing returned the wrong date")
 
     src = to_string(req!(url <> "/source").body)
-    tx = to_string(req!(url <> "/transcript").body)
-    assert!(String.contains?(src, "serve"), "/source not the app's own source")
-    assert!(String.contains?(tx, "assistant"), "/transcript not the build session")
-    log("  ✓ /source #{byte_size(src)}B   /transcript #{byte_size(tx)}B  (both off the Volume)")
+    assert!(String.contains?(src, "serve"), "/source isn't the app's own source")
+    log("  ✓ /source #{byte_size(src)}B  (off the Volume; transcript kept local)")
   end
 
-  # Gate: the two published dates, each with an apparent altitude just above the
-  # horizon and a ~0.5° refraction lift over geometric (confirms the model ran).
+  # The math gate. For each published day: the Sun crosses the 299.1° grid
+  # bearing at ~8:1x PM EDT, sitting at an apparent (refraction-corrected)
+  # altitude just above the horizon — a ~0.5° lift over the geometric altitude,
+  # which confirms the refraction model ran (the published ~0.5° "above the
+  # horizon" is the Palisades-lifted apparent value, not geometric).
   defp assert_henge!(dates, crossings, label \\ "endpoint") do
-    assert!(
-      dates == @expected_dates,
-      "#{label}: dates #{inspect(dates)} != #{inspect(@expected_dates)}"
-    )
-
+    assert!(dates == @expected_dates, "#{label}: dates #{inspect(dates)} != #{inspect(@expected_dates)}")
     by_date = Map.new(crossings, &{&1["date"], &1})
 
     for d <- @expected_dates do
       c = by_date[d] || raise("#{label}: no crossing for #{d}")
+      {hour, minute} = edt_hm(c["crossing_edt"])
       app_alt = c["apparent_altitude_deg"]
       refraction = app_alt - c["geometric_altitude_deg"]
 
-      assert!(
-        app_alt > 0.0 and app_alt < 1.2,
-        "#{label}: #{d} apparent #{inspect(app_alt)}° out of range"
-      )
+      assert!(hour == 20 and minute in 10..15, "#{label}: #{d} crossing #{c["crossing_edt"]} not ~8:1x PM EDT")
+      assert!(app_alt > 0.0 and app_alt < 0.8, "#{label}: #{d} apparent #{inspect(app_alt)}° outside (0°, 0.8°)")
+      assert!(refraction > 0.35 and refraction < 0.65, "#{label}: #{d} refraction #{fmt(refraction)}° not ~0.5°")
 
-      assert!(
-        refraction > 0.35 and refraction < 0.65,
-        "#{label}: #{d} refraction #{fmt(refraction)}° not ~0.5°"
-      )
-
-      log(
-        "  ✓ #{d}: 299.1° at #{c["crossing_edt"]}  apparent #{fmt(app_alt)}° (refraction +#{fmt(refraction)}°)"
-      )
+      log("  ✓ #{d}: 299.1° at #{c["crossing_edt"]}  apparent #{fmt(app_alt)}° (refraction +#{fmt(refraction)}°)")
     end
   end
 
-  # Each run mints a fresh volume; delete earlier prefix-matched ones, keeping
-  # the volume the just-verified deploy serves from.
+  # "2026-05-28T20:13:16-04:00" -> {20, 13}
+  defp edt_hm(edt) do
+    [_, time] = String.split(edt, "T", parts: 2)
+    [h, m | _] = String.split(time, ":")
+    {String.to_integer(h), String.to_integer(m)}
+  end
+
+  # Each run mints a fresh volume; retire EARLIER ones (their deploys have been
+  # replaced), keeping the volume the just-verified deploy serves from. Only
+  # touch volumes older than 10 min, so a concurrent run's fresh volume is
+  # safe. Best-effort and last — housekeeping must never fail a green deploy.
   defp prune_stale_volumes!(client, keep_id) do
-    {:ok, vols} = Modal.Volume.list(client)
+    cutoff = System.os_time(:second) - 600
 
-    stale =
-      Enum.filter(
-        vols,
-        &(String.starts_with?(&1.name, @volume_prefix) and &1.volume_id != keep_id)
-      )
+    with {:ok, vols} <- Modal.Volume.list(client) do
+      stale =
+        Enum.filter(vols, fn v ->
+          String.starts_with?(v.name, @volume_prefix) and v.volume_id != keep_id and v.created_at < cutoff
+        end)
 
-    Enum.each(stale, &Modal.Volume.delete(client, &1.volume_id))
-    if stale != [], do: log("  ✓ pruned #{length(stale)} stale volume(s)")
+      Enum.each(stale, &Modal.Volume.delete(client, &1.volume_id))
+      if stale != [], do: log("  ✓ pruned #{length(stale)} stale volume(s)")
+    end
+  rescue
+    e -> log("  · volume prune skipped: #{Exception.message(e)}")
   end
 
   defp base_dockerfile do
@@ -312,12 +316,20 @@ defmodule Manhattanhenge do
         curl #{url}/manhattanhenge
         curl #{url}/crossing/2026-05-29
         curl #{url}/source       # the app's own source, off the Volume
-        curl #{url}/transcript   # the Claude session that built it
     """)
   end
 
-  defp req!(u), do: Req.get!(u, receive_timeout: 60_000, retry: :transient, max_retries: 5)
-  defp hdr(resp, name), do: resp.headers |> Map.get(name, [""]) |> List.first()
+  # 90s receive timeout: a cold start (min_containers: 0) has to boot Python,
+  # import Skyfield, load the ephemeris, and serve — Modal holds the request
+  # open meanwhile, so the client must out-wait the boot.
+  defp req!(u), do: Req.get!(u, receive_timeout: 90_000, retry: :transient, max_retries: 5)
+
+  defp run_id do
+    ts = System.os_time(:millisecond) |> Integer.to_string(36)
+    rand = Base.url_encode64(:crypto.strong_rand_bytes(6), padding: false)
+    "#{ts}-#{rand}"
+  end
+
   defp esc(s), do: "'" <> String.replace(s, "'", ~S('"'"')) <> "'"
   defp assert!(true, _), do: :ok
   defp assert!(false, m), do: raise("ASSERT FAILED — #{m}")
