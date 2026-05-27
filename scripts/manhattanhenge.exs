@@ -176,11 +176,6 @@ defmodule Manhattanhenge do
 
   # ── STAGE 1 — BUILD: Claude Code writes the implementation, live ──
 
-  # Long claude runs exceed the exec/await 60s wait deadline, so we launch
-  # it as a background exec under a PTY (claude needs a terminal) and poll
-  # the filesystem for an exit-code sentinel instead of awaiting.
-  @claude_deadline_ms 600_000
-
   defp claude_builds_it!(sandbox) do
     log_header("STAGE 1 — BUILD: Claude writes the DE440 calc + FastAPI app (live)")
 
@@ -194,56 +189,21 @@ defmodule Manhattanhenge do
         "(skyfield, fastapi, uvicorn, numpy) and the DE440 ephemeris are " <>
         "already installed."
 
-    launch =
-      "cd #{@workdir} && (claude -p #{shell_escape(prompt)} " <>
-        "--permission-mode acceptEdits > #{@workdir}/claude.log 2>&1; " <>
-        "echo \"EXIT:$?\" > #{@workdir}/claude.done)"
-
-    {:ok, proc} = Modal.Sandbox.exec(sandbox, ["bash", "-c", launch], pty: true)
-    log("  $ claude -p <spec> --permission-mode acceptEdits  (background, PTY #{proc.exec_id})")
+    # PTY: claude needs a terminal (and refuses --dangerously-skip-permissions
+    # as root). The run takes minutes — exec_streaming/3 handles long execs and
+    # streams the transcript as it goes; it raises on a non-zero exit.
+    cmd = "cd #{@workdir} && claude -p #{shell_escape(prompt)} --permission-mode acceptEdits 2>&1"
+    log("  $ claude -p <spec> --permission-mode acceptEdits")
     t = now()
 
-    exit_line = poll_for_done!(sandbox, t)
+    result =
+      Modal.Sandbox.exec_streaming!(sandbox, ["bash", "-c", cmd],
+        on_stdout: fn chunk -> IO.write(IO.ANSI.format([:faint, strip_ansi(chunk), :reset])) end,
+        exec_opts: [pty: true],
+        timeout: :infinity
+      )
 
-    # Dump Claude's transcript for the record.
-    case Modal.Filesystem.read_file(sandbox, "#{@workdir}/claude.log") do
-      {:ok, logtext} ->
-        logtext
-        |> strip_ansi()
-        |> String.split("\n")
-        |> Enum.each(&IO.puts(:stderr, IO.ANSI.format([:faint, "  | ", :reset, &1])))
-
-      _ ->
-        :ok
-    end
-
-    code = exit_line |> String.trim() |> String.replace_prefix("EXIT:", "") |> String.to_integer()
-    assert!(code == 0, "claude exited #{code} — see transcript above")
-    log("  ✓ Claude finished (#{elapsed(t)}, exit #{code})")
-  end
-
-  defp poll_for_done!(sandbox, t0) do
-    deadline = now() + @claude_deadline_ms
-
-    Stream.repeatedly(fn ->
-      Process.sleep(5_000)
-
-      case Modal.Filesystem.read_file(sandbox, "#{@workdir}/claude.done") do
-        {:ok, line} ->
-          {:done, line}
-
-        _ ->
-          IO.puts(:stderr, IO.ANSI.format([:faint, "  … still writing (#{elapsed(t0)})", :reset]))
-          :pending
-      end
-    end)
-    |> Enum.find_value(fn
-      {:done, line} ->
-        line
-
-      :pending ->
-        if now() > deadline, do: raise("claude did not finish within #{@claude_deadline_ms}ms")
-    end)
+    log("\n  ✓ Claude finished (#{elapsed(t)}, exit #{result.code})")
   end
 
   # The correctness gate, run against the live endpoint: the two
