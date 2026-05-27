@@ -5,6 +5,8 @@ defmodule Modal.Contract.AppTest do
   Asserted contract:
     - `:app_get_or_create` returns `%AppGetOrCreateResponse{app_id: "ap-…"}`.
     - The call is idempotent (same name returns the same app_id).
+    - `Modal.App.list/2` returns app items with `:app_id` / `:description`
+      / `:state`. (`AppStop` is destructive — unit-tested only.)
   """
   use ExUnit.Case, async: false
   alias Modal.Contract.Support
@@ -42,5 +44,19 @@ defmodule Modal.Contract.AppTest do
 
     assert %Modal.Client.AppGetOrCreateResponse{} = resp
     assert_struct_shape(resp, %{app_id: {:string_prefix, "ap-"}})
+  end
+
+  test "App.list returns app items with the documented shape", %{client: client} do
+    assert {:ok, apps} = Modal.App.list(client)
+    assert is_list(apps)
+
+    # AppList only surfaces deployed/running/recently-stopped apps, so a
+    # freshly lookup-created app may not appear — validate the item shape
+    # against whatever the workspace already has, if anything.
+    for app <- Enum.take(apps, 1) do
+      assert String.starts_with?(app.app_id, "ap-")
+      assert is_binary(app.description)
+      assert is_atom(app.state)
+    end
   end
 end

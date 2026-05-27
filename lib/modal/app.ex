@@ -61,6 +61,68 @@ defmodule Modal.App do
     end
   end
 
+  # ── List / stop ─────────────────────────────────────────────────
+
+  @doc """
+  List apps in an environment. Returns `{:ok, [map]}`, one map per app
+  with `:app_id`, `:name`, `:description`, `:state`, `:created_at`,
+  `:stopped_at`, and `:n_running_tasks`.
+
+  Returns apps in every state (deployed, stopped, …); filter on `:state`
+  for the live ones. Modal carries the human-readable app name in
+  `:description` — `:name` is often empty.
+
+      {:ok, apps} = Modal.App.list(client)
+      deployed = Enum.filter(apps, &(&1.state == :APP_STATE_DEPLOYED))
+
+  Use `:environment_name` to list a non-default environment.
+  """
+  @spec list(GenServer.server(), keyword()) :: {:ok, [map()]} | {:error, Modal.Error.t()}
+  def list(client, opts \\ []) do
+    request = %Modal.Client.AppListRequest{
+      environment_name: Keyword.get(opts, :environment_name, "")
+    }
+
+    with {:ok, resp} <- RPC.call(client, :AppList, request) do
+      {:ok, Enum.map(resp.apps, &app_list_item_to_map/1)}
+    end
+  end
+
+  defp app_list_item_to_map(item) do
+    item |> Map.from_struct() |> Map.delete(:__unknown_fields__)
+  end
+
+  @doc """
+  Stop a deployed app — halts its running containers and tears down its
+  web endpoints. Accepts a `%Modal.App{}` or a raw `"ap-..."` id.
+
+      {:ok, app} = Modal.App.lookup(client, "my-service")
+      :ok = Modal.App.stop(client, app)
+
+  Returns `:ok` or `{:error, %Modal.Error{}}`. Redeploy to bring the app
+  back.
+  """
+  @spec stop(GenServer.server(), t() | String.t()) :: :ok | {:error, Modal.Error.t()}
+  def stop(client, %__MODULE__{id: id}), do: stop(client, id)
+
+  def stop(client, app_id) when is_binary(app_id) do
+    # `AppStopSource` has no Elixir-specific value (CLI / PYTHON_CLIENT /
+    # WEB only), so we leave `source` at its UNSPECIFIED default rather
+    # than impersonate another client. The field is analytics-only.
+    request = %Modal.Client.AppStopRequest{app_id: app_id}
+
+    with {:ok, _empty} <- RPC.call(client, :AppStop, request), do: :ok
+  end
+
+  @doc "Like `stop/2` but raises on error."
+  @spec stop!(GenServer.server(), t() | String.t()) :: :ok
+  def stop!(client, app) do
+    case stop(client, app) do
+      :ok -> :ok
+      {:error, %Modal.Error{} = err} -> raise err
+    end
+  end
+
   # ── Deploy / publish ────────────────────────────────────────────
 
   @publish_opts [
