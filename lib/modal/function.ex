@@ -111,6 +111,7 @@ defmodule Modal.Function do
     FunctionPutInputsItem,
     FunctionRetryPolicy,
     Schedule,
+    VolumeMount,
     WebhookConfig
   }
 
@@ -158,6 +159,14 @@ defmodule Modal.Function do
       doc: "Name of the callable inside `:module`. Defaults to `:name`."
     ],
     secret_ids: [type: {:list, :string}, default: []],
+    volumes: [
+      type: {:list, :any},
+      default: [],
+      doc:
+        "Volumes to mount into the function's containers — `%Modal.Volume{}` " <>
+          "structs (with `:path`) or `%{id:, path:, read_only:}` maps. Mirrors " <>
+          "`Modal.Sandbox.create/2`'s `:volumes`."
+    ],
     timeout_secs: [
       type: :pos_integer,
       default: 300,
@@ -361,6 +370,7 @@ defmodule Modal.Function do
     module: @common_deploy_opts[:module],
     callable: @common_deploy_opts[:callable],
     secret_ids: @common_deploy_opts[:secret_ids],
+    volumes: @common_deploy_opts[:volumes],
     timeout_secs: @common_deploy_opts[:timeout_secs],
     idle_timeout_secs: @common_deploy_opts[:idle_timeout_secs],
     schedule: @common_deploy_opts[:schedule],
@@ -1122,6 +1132,25 @@ defmodule Modal.Function do
     |> maybe_put(:retry_policy, build_retry_policy(opts[:retries]))
     |> maybe_put(:resources, build_resources(opts))
     |> maybe_put(:i6pn_enabled, opts[:i6pn] || nil)
+    |> maybe_put(:volume_mounts, build_volume_mounts(opts[:volumes]))
+  end
+
+  # Mirror of `Modal.Sandbox`'s volume-mount builder: accept `%Modal.Volume{}`
+  # structs (preferred) or `{id, path}`-bearing maps. Empty -> nil so
+  # `maybe_put/3` leaves `volume_mounts` unset.
+  defp build_volume_mounts(volumes) when volumes in [nil, []], do: nil
+  defp build_volume_mounts(volumes) when is_list(volumes), do: Enum.map(volumes, &build_volume_mount/1)
+
+  defp build_volume_mount(%Modal.Volume{} = v) do
+    %VolumeMount{volume_id: v.id, mount_path: v.path, read_only: v.read_only}
+  end
+
+  defp build_volume_mount(v) when is_map(v) do
+    %VolumeMount{
+      volume_id: Map.get(v, :id) || Map.get(v, "id"),
+      mount_path: Map.get(v, :path) || Map.get(v, "path"),
+      read_only: Map.get(v, :read_only, false)
+    }
   end
 
   defp build_resources(opts) do
