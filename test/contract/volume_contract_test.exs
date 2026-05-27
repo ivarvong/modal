@@ -82,4 +82,19 @@ defmodule Modal.Contract.VolumeTest do
   test "list_files on empty volume returns []", %{client: client, vol_id: vol_id} do
     assert {:ok, []} = Modal.Volume.list_files(client, vol_id)
   end
+
+  test "list/2 surfaces a freshly created volume with its name + id", %{
+    client: client,
+    vol_id: vol_id
+  } do
+    # Proves the live wire shape behind list/2: that Modal populates
+    # VolumeListItem.metadata.{name, creation_info.created_at} (the fields
+    # we page on and return), not just the bare volume_id.
+    assert {:ok, vols} = Modal.Volume.list(client)
+
+    mine = Enum.find(vols, &(&1.volume_id == vol_id))
+    assert mine, "expected freshly created volume #{vol_id} in Volume.list/2"
+    assert String.starts_with?(mine.name, "contract-vol-")
+    assert is_float(mine.created_at) and mine.created_at > 0
+  end
 end
