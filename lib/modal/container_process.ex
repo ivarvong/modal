@@ -73,37 +73,7 @@ defmodule Modal.ContainerProcess do
         "ex-#{System.unique_integer([:positive, :monotonic])}-#{:crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)}"
 
       tcr = Keyword.get(opts, :tcr_stub)
-
-      pty_info =
-        case Keyword.get(opts, :pty, false) do
-          false ->
-            nil
-
-          true ->
-            %Modal.Client.PTYInfo{
-              enabled: true,
-              winsz_rows: 24,
-              winsz_cols: 80,
-              env_term: "xterm-256color",
-              pty_type: :PTY_TYPE_SHELL,
-              no_terminate_on_idle_stdin: true
-            }
-
-          %Modal.Client.PTYInfo{} = info ->
-            info
-        end
-
-      request = %TCR.TaskExecStartRequest{
-        task_id: task_id,
-        exec_id: exec_id,
-        command_args: command,
-        stdout_config: :TASK_EXEC_STDOUT_CONFIG_PIPE,
-        stderr_config: :TASK_EXEC_STDERR_CONFIG_PIPE,
-        timeout_secs: Keyword.get(opts, :timeout_secs, 300),
-        workdir: Keyword.get(opts, :workdir, ""),
-        pty_info: pty_info
-      }
-
+      request = exec_start_request(task_id, exec_id, command, opts)
       stub = tcr || @default_tcr_stub
 
       result =
@@ -114,6 +84,43 @@ defmodule Modal.ContainerProcess do
       finalize_start(result, caller, channel, task_id, exec_id, jwt, tcr)
     end
   end
+
+  @doc false
+  # Builds the TaskExecStartRequest. Extracted from start/3 so it's unit-testable
+  # without a live worker channel.
+  #
+  # `:timeout_secs` is the worker-side KILL timeout: if the command doesn't exit
+  # within it the worker SIGKILLs it (surfacing as exit 137). It is UNSET by
+  # default — no per-exec cap; the sandbox's own `:timeout_secs` governs how long
+  # the command may run. This matches Modal's Python SDK (`exec(timeout=None)`)
+  # and is distinct from `exec_streaming/3`'s `:timeout` (the client-side
+  # wall-clock budget for awaiting output).
+  def exec_start_request(task_id, exec_id, command, opts) do
+    %TCR.TaskExecStartRequest{
+      task_id: task_id,
+      exec_id: exec_id,
+      command_args: command,
+      stdout_config: :TASK_EXEC_STDOUT_CONFIG_PIPE,
+      stderr_config: :TASK_EXEC_STDERR_CONFIG_PIPE,
+      timeout_secs: opts[:timeout_secs],
+      workdir: Keyword.get(opts, :workdir, ""),
+      pty_info: pty_info(Keyword.get(opts, :pty, false))
+    }
+  end
+
+  defp pty_info(false), do: nil
+
+  defp pty_info(true),
+    do: %Modal.Client.PTYInfo{
+      enabled: true,
+      winsz_rows: 24,
+      winsz_cols: 80,
+      env_term: "xterm-256color",
+      pty_type: :PTY_TYPE_SHELL,
+      no_terminate_on_idle_stdin: true
+    }
+
+  defp pty_info(%Modal.Client.PTYInfo{} = info), do: info
 
   defp finalize_start({:ok, _}, caller, channel, task_id, exec_id, jwt, tcr) do
     # Spawn a monitor that cleans up the gRPC channel if the caller dies.

@@ -88,6 +88,31 @@ defmodule Modal.ErrorTest do
     end
   end
 
+  describe "exec_failed/3" do
+    test "a plain non-zero exit surfaces the stderr tail" do
+      err = Modal.Error.exec_failed(17, "out", "boom\nfatal: nope\n")
+      msg = Exception.message(err)
+      assert err.kind == :exec_failed and err.code == 17
+      assert msg =~ "fatal: nope"
+      refute msg =~ "signal"
+    end
+
+    test "a signal exit (128 + signal) explains it was killed, not just non-zero" do
+      # 137 = 128 + SIGKILL(9) — the bare exit code that the exec :timeout_secs
+      # / OOM kills produce. The message should name the signal + the culprits.
+      msg = Exception.message(Modal.Error.exec_failed(137, "", ""))
+      assert msg =~ "killed by signal 9"
+      assert msg =~ "timeout_secs"
+      assert msg =~ "out-of-memory"
+    end
+
+    test "a signal exit still appends the stderr tail when present" do
+      msg = Exception.message(Modal.Error.exec_failed(143, "", "shutting down\n"))
+      assert msg =~ "killed by signal 15"
+      assert msg =~ "shutting down"
+    end
+  end
+
   describe "raise/rescue interop" do
     test "is an Exception and can be raised + rescued" do
       err = Modal.Error.grpc(14, "unavailable")

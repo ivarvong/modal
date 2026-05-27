@@ -510,6 +510,15 @@ defmodule Modal.Sandbox do
       {:ok, proc} = Modal.Sandbox.exec(sandbox, ["pytest", "-v"])
       proc |> Enum.each(&IO.write/1)
       {:ok, 0} = Modal.ContainerProcess.exit_code(proc)
+
+  ## Options
+
+    * `:workdir` — working directory for the command.
+    * `:pty` — `true` for a default PTY, or a `%Modal.Client.PTYInfo{}`.
+    * `:timeout_secs` — worker-side kill timeout: the command is SIGKILLed
+      if it doesn't exit within it (surfacing as exit 137). Unset by
+      default — the command runs until it finishes or the sandbox's own
+      `:timeout_secs` fires. Matches the Python SDK's `exec(timeout=None)`.
   """
   @spec exec(t(), [String.t()], keyword()) ::
           {:ok, Modal.ContainerProcess.t()} | {:error, Modal.Error.t()}
@@ -577,10 +586,20 @@ defmodule Modal.Sandbox do
       `Modal.ContainerProcess.line_buffered/1` for one invocation per
       `\\n`-terminated line. Default: no-op.
     * `:on_stderr` — same shape, for stderr.
-    * `:timeout` — wall-clock ms for the full operation (default
-      `:infinity`).
+    * `:timeout` — **client-side** wall-clock ms for awaiting output
+      (default `:infinity`). On expiry, `await/2` returns/raises a
+      `:timeout` — the command keeps running on the worker.
     * `:exec_opts` — extra opts forwarded to `Modal.Sandbox.exec/3`
       (`:workdir`, `:pty`, `:timeout_secs`, …).
+
+  > #### Two different timeouts {: .warning}
+  >
+  > `:timeout` (above) is how long *this client* waits. `exec_opts:
+  > [timeout_secs: n]` is the **worker-side** cap — the worker SIGKILLs
+  > the command after `n` seconds (surfacing as exit 137, the sandbox
+  > untouched). `:timeout_secs` is unset by default (no per-exec cap; the
+  > sandbox's own `:timeout_secs` governs), so `timeout: :infinity` truly
+  > means "wait forever" rather than being silently capped.
 
   Returns the same result shape as `Modal.ContainerProcess.await/2`.
   Always calls `Modal.ContainerProcess.close/1` on the way out

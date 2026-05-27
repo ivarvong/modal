@@ -30,6 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Modal.Sandbox.exec/3` no longer imposes a hidden 300s per-exec timeout.
+  The worker-side `:timeout_secs` (which SIGKILLs the command — surfacing as
+  exit 137, sandbox untouched) is now **unset by default**: a command runs
+  until it finishes or the sandbox's own `:timeout_secs` fires, matching the
+  Python SDK's `exec(timeout=None)`. Previously a build/exec longer than 300s
+  was silently killed even with `exec_streaming(..., timeout: :infinity)`,
+  because the client-side await `:timeout` and the worker-side `:timeout_secs`
+  are independent. Both are now documented together.
+- `Modal.Error.exec_failed/3` messages now explain a signal exit: a code over
+  128 (e.g. 137 = SIGKILL, 143 = SIGTERM) reads "killed by signal N — likely
+  an exec :timeout_secs, the sandbox's :timeout_secs, or an out-of-memory
+  kill" instead of a bare exit code, so a kill isn't mistaken for the command
+  returning non-zero.
 - `Modal.Sandbox` volume mounts now set `allow_background_commits: true`, so
   writes to a mounted `Modal.Volume` actually persist (the worker commits
   periodically and on exit). Previously writes were lost unless committed
