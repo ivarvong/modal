@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Modal.Sandbox` volume mounts now set `allow_background_commits: true`, so
+  writes to a mounted `Modal.Volume` actually persist (the worker commits
+  periodically and on exit). Previously writes were lost unless committed
+  from inside the container — which a sandbox can't do, since it has no
+  Modal client credentials. Matches the Python SDK's sandbox volume mounts.
 - `Modal.ContainerProcess.await/2` (and `Modal.Sandbox.exec_streaming/3`)
   no longer fail on execs that run longer than the per-attempt wait
   deadline (~60s). `TaskExecWait` blocks until the exec exits, so a long
