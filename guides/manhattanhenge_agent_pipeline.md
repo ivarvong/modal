@@ -129,7 +129,8 @@ curl https://ivarvong--manhattanhenge.modal.run/source
 - The build sandbox is terminated in an `after` block.
 - The latest serving Volume is kept because the deployed Function depends on it.
   Older prefix-matched Volumes are pruned best-effort after a successful deploy,
-  but only once they are older than 10 minutes.
+  but only once they are older than the build window (30 minutes, the build
+  sandbox's `timeout_secs`), so a slow concurrent run's in-use Volume is safe.
 - The endpoint uses `min_containers: 0`, so the first request can pay a cold
   start. The verifier uses a 90s receive timeout to out-wait that boot path.
 - The base image installs the current Claude Code CLI and lower-bound Python
