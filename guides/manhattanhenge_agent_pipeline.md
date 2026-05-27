@@ -1,42 +1,24 @@
 # Manhattanhenge as an agent build pipeline
 
-`scripts/manhattanhenge.exs` is a research demo, but it is intentionally
-packaged as an engineering artifact: an AI coding agent is treated as an
-untrusted remote build worker, not as a local copilot whose output is assumed
-correct.
+`scripts/manhattanhenge.exs` is a small live demo of a larger pattern: treat an
+AI coding agent as one remote build worker inside a controlled system, then make
+the surrounding system responsible for isolation, artifact movement,
+verification, and cleanup.
 
-The domain is deliberately small and checkable. Claude Code writes a FastAPI app
-that computes the 2026 Manhattanhenge dates from Skyfield / JPL DE440. Modal
-runs both the build and the serve. Elixir owns orchestration, resource
-lifecycle, and acceptance.
+The problem is intentionally concrete. Claude Code writes a FastAPI app that
+computes the 2026 Manhattanhenge dates using Skyfield and JPL DE440. Modal runs
+both the build and the serve. Elixir coordinates the lifecycle and decides
+whether the generated artifact is acceptable.
 
-## What a staff+ / EM reviewer should see
+## Shape
 
-This is not primarily an astronomy demo. The important claim is the system
-shape:
+The useful part is not that Claude can write a Python file. The useful part is
+where that file is allowed to go next.
 
-> Generated code does not become trusted because an agent wrote it. It becomes
-> deployable only after an external orchestrator verifies it and moves it across
-> a controlled artifact boundary.
-
-The demo exercises the same seams a production agent platform needs:
-
-- Isolation: Claude runs in a Modal sandbox, not on the developer machine.
-- Artifact boundary: generated `app.py` is committed to a fresh `Modal.Volume`.
-- Separation of duties: the build sandbox writes; the deployed function mounts
-  the same Volume read-only.
-- Independent acceptance: Elixir runs its own import smoke test and curls the
-  live URL for domain checks.
-- Credential hygiene: the Anthropic key is injected as an ephemeral Modal
-  Secret, then deleted in an `after` block.
-- Cleanup hygiene: the sandbox is terminated in an `after` block and stale
-  demo Volumes are pruned best-effort after a green deploy.
-- Provenance without oversharing: `/source` serves the generated app code, but
-  the Claude transcript stays local and is not deployed.
-- Cost visibility: the local Claude transcript is parsed for `total_cost_usd`
-  and turn count.
-
-## Architecture
+Generated code starts in a sandbox, crosses a Volume boundary only after an
+orchestrator-owned smoke test, and is then served from the same Volume mounted
+read-only into an ASGI Function. The live endpoint is checked from outside the
+container before the run is considered green.
 
 ```text
 Elixir orchestrator
@@ -44,14 +26,14 @@ Elixir orchestrator
        base image: Claude CLI + Skyfield + FastAPI + DE440
 
   -> Modal.Secret.create(if_exists: :ephemeral)
-       ANTHROPIC_API_KEY only visible inside the build sandbox
+       ANTHROPIC_API_KEY visible only to the build sandbox
 
   -> Modal.Sandbox.create
        mounts fresh Modal.Volume read-write at /work
        writes SPEC.md
        runs Claude Code headless
        saves transcript locally at /tmp/henge_transcript.jsonl
-       orchestrator smoke-tests: from app import serve; serve()
+       smoke-tests: from app import serve; serve()
        sandbox exits; worker commits Volume
 
   -> Modal.Function.deploy_asgi
@@ -60,54 +42,47 @@ Elixir orchestrator
 
   -> live verifier
        curls /, /manhattanhenge, /crossing/2026-05-29, /source
-       asserts dates, crossing times, apparent altitude, refraction lift
+       checks dates, crossing times, apparent altitude, refraction lift
 ```
 
-## Trust boundaries
+## Boundaries
 
-The agent controls:
+The agent controls the implementation of `/work/app.py` and the choices it makes
+inside the build sandbox. It does not control deployment, cleanup, which secrets
+are attached to the serving Function, or the final acceptance checks.
 
-- The contents of `/work/app.py`.
-- Its own implementation strategy inside the sandbox.
-- The local transcript produced by `claude --output-format stream-json`.
+The orchestrator controls the prompt contract, image, sandbox, Secret, Volume,
+deployed Function, and verification gates. The Anthropic key is injected only
+into the build sandbox. The serving Function mounts the generated source
+read-only and does not receive that Secret.
 
-The orchestrator controls:
+`/source` is public so the generated app can be inspected. The Claude transcript
+is intentionally not published; it stays local for cost/debugging because agent
+sessions are easy places to leak paths, env dumps, or future tool output.
 
-- The prompt contract and route/schema requirements.
-- The image, sandbox, secret, Volume, and deployed Function lifecycles.
-- The acceptance gate before deploy.
-- The live endpoint verification after deploy.
-- What is published. Generated source is public; the transcript is not.
+## Why Manhattanhenge works well here
 
-The deployed service controls:
+The task is constrained enough to fit in one file but sharp enough to catch lazy
+solutions. The spec gives Claude the grid bearing, observer location, ephemeris,
+and May 2026 search window. It does not give the two final dates.
 
-- Only the generated FastAPI app mounted from the read-only Volume.
-- No Anthropic key. The serving Function does not receive the build Secret.
+The verifier catches common mistakes:
 
-## Why Manhattanhenge is a useful test case
-
-The input is constrained, but not trivial. The spec tells Claude the Manhattan
-grid bearing (299.1 degrees), the observer location, the ephemeris, and the May
-2026 search window. It does not tell Claude the two final dates.
-
-The verification catches several plausible agent mistakes:
-
-- Hard-coding the published dates without doing the crossing calculation.
+- Hard-coding dates without doing the crossing calculation.
+- Reporting sunset instead of the instant the Sun crosses Manhattan's grid
+  bearing.
 - Using geometric altitude instead of apparent refraction-corrected altitude.
-- Reporting sunset rather than the instant the Sun crosses the grid bearing.
-- Ignoring DST / local time formatting.
-- Producing an app that imports in the sandbox but fails when served from the
-  Volume.
+- Mishandling New York local time / DST.
+- Producing code that imports in the build sandbox but fails once served from
+  the Volume.
 
-The careful scientific detail is altitude. Near the horizon, refraction is about
-0.5 degrees, larger than the Sun's apparent radius. On May 28, the geometric
-center is slightly below the true horizon while the apparent disk is visibly up.
-The verifier asserts the apparent altitude and the refraction lift, not just the
-date strings.
+The altitude check is the subtle one. Near the horizon, refraction is about 0.5
+degrees, larger than the Sun's apparent radius. On May 28, the geometric center
+is slightly below the true horizon while the apparent disk is visibly up. The
+gate asserts the apparent altitude and refraction lift, not just the date
+strings.
 
-## Latest live run
-
-Run command:
+## Latest run
 
 ```sh
 set -a; source .env; set +a
@@ -144,72 +119,30 @@ curl https://ivarvong--manhattanhenge.modal.run/crossing/2026-05-29
 curl https://ivarvong--manhattanhenge.modal.run/source
 ```
 
-## Demo-environment caveats
+## Operational notes
 
-These are intentional tradeoffs for a live research artifact, not production
-defaults:
-
-- The demo depends on local `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, and
-  `ANTHROPIC_API_KEY` from `.env`.
+- The demo expects `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, and
+  `ANTHROPIC_API_KEY` in the local environment.
+- Each run uses a fresh Volume name with timestamp plus random suffix, so a new
+  build does not patch stale `app.py` from a prior run.
+- The build Secret is ephemeral and also deleted in an `after` block.
+- The build sandbox is terminated in an `after` block.
+- The latest serving Volume is kept because the deployed Function depends on it.
+  Older prefix-matched Volumes are pruned best-effort after a successful deploy,
+  but only once they are older than 10 minutes.
+- The endpoint uses `min_containers: 0`, so the first request can pay a cold
+  start. The verifier uses a 90s receive timeout to out-wait that boot path.
 - The base image installs the current Claude Code CLI and lower-bound Python
-  dependencies. That keeps the demo live, but it is not bit-for-bit
-  reproducible across time.
-- Claude is allowed to use Bash inside the build sandbox. That is appropriate
-  for a one-off coding-agent demo; a multi-tenant product should add a narrower
-  tool policy, network egress policy, and artifact allowlist.
-- `/source` is public by design so reviewers can inspect the generated app. The
-  agent transcript is not public by design.
-- The deployed endpoint uses `min_containers: 0`, so the first request pays a
-  cold-start tax. The script uses a 90s HTTP receive timeout to out-wait that.
-- The demo leaves the latest serving Volume in place because the live Function
-  depends on it. Older prefix-matched Volumes are pruned only after a successful
-  deploy and only when they are older than 10 minutes.
+  dependencies. That keeps the demo current, not bit-for-bit reproducible.
 
-## Failure modes the demo now handles
+## Limits
 
-- Claude exceeds five minutes: `exec_streaming!(..., timeout: :infinity)` waits
-  for the build while the sandbox timeout remains the outer bound.
-- Claude claims success but writes an unimportable app: the orchestrator runs an
-  independent import smoke test before deploy.
-- The sandbox would leak on failure: `Modal.Sandbox.terminate/1` runs in an
-  `after` block.
-- Per-run secrets would accumulate: the secret is ephemeral and also deleted in
-  an `after` block.
-- Concurrent runs would collide on names: the run id includes a millisecond
-  timestamp and random bytes.
-- A stale app would be patched instead of rebuilt: every run uses a fresh Volume.
-- Agent session details would be exposed publicly: transcript publication was
-  removed; only generated source is served.
+This is still a demo environment, not a hardened multi-tenant agent runner.
+Claude has broad Bash access inside the build sandbox. A production service
+would likely add a narrower tool policy, egress controls, artifact manifests,
+per-task golden tests, and an explicit teardown path for the deployed app and
+serving Volume.
 
-## Remaining gaps by design
-
-These are useful discussion points in a staff+ / EM interview:
-
-- This is not a hardened multi-tenant runner. The agent still has broad Bash in
-  its sandbox.
-- The astronomy verifier is strong for this demo but not a general proof of
-  correctness. A production system would add golden tests and typed artifact
-  manifests per task class.
-- The generated source is not committed to the repo. Reviewers can fetch it
-  from `/source`; the checked-in artifact is the reproducible orchestration
-  pattern, not one sampled app body.
-- The live endpoint can drift if Modal, Claude, or package indexes change. The
-  latest observed run is recorded above so reviewers have an immutable result to
-  compare against.
-- The cleanup policy intentionally preserves the current serving Volume. A
-  production demo environment would also expose an explicit teardown command.
-
-## Evaluation lens
-
-The artifact is meant to show judgment more than novelty:
-
-- Can I turn an LLM into one worker inside a larger controlled system?
-- Do I know where trust starts and stops?
-- Do I verify the artifact externally instead of trusting the agent transcript?
-- Do I handle resource lifecycle, cleanup, and credential exposure?
-- Do I make the demo observable enough that another engineer can debug it?
-- Do I state what is not production-ready instead of implying a toy is a
-  platform?
-
-That is the staff-level claim: the agent is interesting, but the surrounding
-system is the product.
+The generated source is not committed to this repo. The checked-in artifact is
+the orchestration pattern; the sampled app body is available from `/source` on
+the live endpoint.
