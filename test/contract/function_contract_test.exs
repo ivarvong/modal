@@ -41,6 +41,10 @@ defmodule Modal.Contract.FunctionTest do
   def count_to(n):
       for i in range(n):
           yield i
+
+  def boom_gen(n):
+      raise RuntimeError("expected — generator contract test")
+      yield n  # unreachable; the yield just makes boom_gen a generator
   """
 
   setup_all do
@@ -60,7 +64,7 @@ defmodule Modal.Contract.FunctionTest do
         app: app
       )
 
-    {:ok, [square, add, boom, echo, count_to]} =
+    {:ok, [square, add, boom, echo, count_to, boom_gen]} =
       Modal.Function.deploy_many(client, [
         {:function,
          app: app,
@@ -80,6 +84,13 @@ defmodule Modal.Contract.FunctionTest do
          image_id: image_id,
          module: "entry",
          callable: "count_to",
+         generator: true},
+        {:function,
+         app: app,
+         name: "contract-boom-gen",
+         image_id: image_id,
+         module: "entry",
+         callable: "boom_gen",
          generator: true}
       ])
 
@@ -90,7 +101,8 @@ defmodule Modal.Contract.FunctionTest do
       add: add,
       boom: boom,
       echo: echo,
-      count_to: count_to
+      count_to: count_to,
+      boom_gen: boom_gen
     }
   end
 
@@ -194,6 +206,23 @@ defmodule Modal.Contract.FunctionTest do
     # for generator functions.
     {:ok, call} = Modal.Function.spawn(client, f, [3], %{}, generator: true)
     assert [0, 1, 2] = Modal.Function.stream(call) |> Enum.to_list()
+  end
+
+  test "invoke_stream/5 surfaces a failed generator as :function_failed (not a silent [])", %{
+    client: client,
+    boom_gen: f
+  } do
+    # A generator that raises sends no GENERATOR_DONE; its failure lives in
+    # FunctionGetOutputs. stream/2 must poll it and raise — the regression
+    # behind the gen_dump.py incident, where a failed generator came back as
+    # an empty list and the failure was only visible in the Modal dashboard.
+    err =
+      assert_raise Modal.Error, fn ->
+        Modal.Function.invoke_stream(client, f, [3]) |> Enum.to_list()
+      end
+
+    assert err.kind == :function_failed
+    assert err.message =~ "RuntimeError"
   end
 
   test "echo verifies the (args_tuple, kwargs_dict) pickle wire shape", %{

@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently dropping the value and returning a gappy result. Blob-fetch
   is tracked on the roadmap; until then the failure is explicit and
   consistent with `await/2`.
+- Generator streams now surface a *failed* generator (one that raises, or
+  whose module fails to import on the worker) as a raised
+  `%Modal.Error{kind: :function_failed}` with the worker traceback, instead
+  of returning a silent empty/partial list. `stream/2` now polls the
+  terminal `FunctionGetOutputs` result when the data-out stream ends without
+  a `GENERATOR_DONE` terminator (matching CPython's `run_generator`).
 - `Modal.Function.await/2` now distinguishes a call whose output has expired
   (or whose input was lost to worker preemption with no retry) from a
   genuine timeout: when the server reports no result **and** no unfinished
