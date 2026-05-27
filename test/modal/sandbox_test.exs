@@ -75,6 +75,8 @@ defmodule Modal.SandboxTest do
         assert mount.volume_id == "vo-abc"
         assert mount.mount_path == "/data"
         assert mount.read_only == true
+        # Worker commits writes periodically + on exit (matches Python SDK).
+        assert mount.allow_background_commits == true
         {:ok, %Modal.Client.SandboxCreateResponse{sandbox_id: @sandbox_id}}
       end)
 
@@ -89,6 +91,7 @@ defmodule Modal.SandboxTest do
         assert mount.volume_id == "vo-xyz"
         assert mount.mount_path == "/scratch"
         assert mount.read_only == false
+        assert mount.allow_background_commits == true
         {:ok, %Modal.Client.SandboxCreateResponse{sandbox_id: @sandbox_id}}
       end)
 
