@@ -228,15 +228,28 @@ defmodule Modal.Error do
     %__MODULE__{
       kind: :exec_failed,
       code: code,
-      # The formatter (`message/1`) already prints `(code)` — duplicating
-      # "exited with code N" here produced "(17): exec exited with code
-      # 17:" double-mentions in the wild. The message is just the stderr
-      # tail (the actually-useful diagnostic) or a brief fallback when
-      # stderr was empty.
-      message: stderr_tail(stderr, "non-zero exit"),
+      # The formatter (`message/1`) already prints `(code)`, so we don't
+      # repeat the number. The body is the stderr tail (the actually-useful
+      # diagnostic) — except for a signal exit (128 + signal), where the
+      # command was *killed* rather than returning non-zero: there we name
+      # the signal and the usual culprits, so a bare 137 isn't a mystery.
+      message: exec_failed_message(code, stderr),
       metadata: %{stdout: stdout, stderr: stderr}
     }
   end
+
+  defp exec_failed_message(code, stderr) when code > 128 do
+    hint =
+      "killed by signal #{code - 128} — likely an exec :timeout_secs, the " <>
+        "sandbox's :timeout_secs, or an out-of-memory kill"
+
+    case stderr_tail(stderr, "") do
+      "" -> hint
+      tail -> hint <> "; " <> tail
+    end
+  end
+
+  defp exec_failed_message(_code, stderr), do: stderr_tail(stderr, "non-zero exit")
 
   # Last `take` lines of `stderr` (trimmed), or `fallback` when stderr is
   # empty. The cap is small on purpose — exception messages get printed

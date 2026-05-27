@@ -34,6 +34,40 @@ defmodule Modal.ContainerProcessTest do
     }
   end
 
+  describe "exec_start_request/4" do
+    test ":timeout_secs is unset by default — no per-exec kill (sandbox timeout governs)" do
+      req = Modal.ContainerProcess.exec_start_request("ti-1", "ex-1", ["echo", "hi"], [])
+      assert req.timeout_secs == nil
+      assert req.command_args == ["echo", "hi"]
+      assert req.workdir == ""
+      assert req.pty_info == nil
+    end
+
+    test ":timeout_secs passes through when given" do
+      req =
+        Modal.ContainerProcess.exec_start_request("ti-1", "ex-1", ["sleep", "9000"],
+          timeout_secs: 1_800
+        )
+
+      assert req.timeout_secs == 1_800
+    end
+
+    test ":workdir passes through" do
+      req = Modal.ContainerProcess.exec_start_request("ti-1", "ex-1", ["ls"], workdir: "/app")
+      assert req.workdir == "/app"
+    end
+
+    test ":pty true builds a default PTYInfo; a struct passes through" do
+      assert %Modal.Client.PTYInfo{enabled: true, pty_type: :PTY_TYPE_SHELL} =
+               Modal.ContainerProcess.exec_start_request("ti-1", "ex-1", ["bash"], pty: true).pty_info
+
+      custom = %Modal.Client.PTYInfo{enabled: true, winsz_rows: 50, winsz_cols: 200}
+
+      assert ^custom =
+               Modal.ContainerProcess.exec_start_request("ti-1", "ex-1", ["bash"], pty: custom).pty_info
+    end
+  end
+
   # ── JWT expiry ───────────────────────────────────────────────────
 
   describe "JWT expiry" do
