@@ -3,9 +3,9 @@
 # Modal runs both phases, and a Volume is the handoff — the generated code
 # never touches the orchestrator's disk:
 #
-#   1. BUILD  — a sandbox runs the Claude Code CLI, which writes app.py
-#               (DE440/Skyfield calc + FastAPI) onto a mounted Volume. On
-#               sandbox exit the worker commits the Volume.
+#   1. BUILD  — a sandbox runs the Claude Code CLI, which writes (and
+#               smoke-tests) app.py — DE440/Skyfield calc + FastAPI — onto a
+#               mounted Volume. On sandbox exit the worker commits the Volume.
 #   2. DEPLOY — deploy_asgi mounts the same Volume read-only and serves
 #               app.py directly: same base image, no copy-out, no rebake.
 #   3. VERIFY — curl the live endpoint: smoke-test + correctness in one.
@@ -32,9 +32,13 @@ defmodule Manhattanhenge do
   # function — the handoff happens entirely on Modal.
   @volume_name "manhattanhenge-app"
 
-  # Local copy of Claude's app.py (read back from the Volume) for
-  # inspection after the run.
+  # Model the Claude Code CLI runs the build with.
+  @claude_model "claude-sonnet-4-6"
+
+  # Local copy of Claude's app.py (read back from the Volume) + the full
+  # session transcript, for inspection after the run.
   @artifact_dir "/tmp/henge_artifacts"
+  @transcript_file Path.join(@artifact_dir, "claude_transcript.jsonl")
 
   # The gate: the published 2026 dates and the EDT crossing-time window,
   # asserted against the live endpoint.
@@ -74,6 +78,9 @@ defmodule Manhattanhenge do
     * `GET /source`          -> this app's own source code as `text/plain`
                                 (read `__file__`) — a peek at exactly what's
                                 running in prod, served off the Volume
+    * `GET /transcript`      -> the Claude Code session that built this app,
+                                from `transcript.jsonl` next to this file
+                                (`text/plain`; a short note if it's absent)
 
   Write it production-grade: use `zoneinfo("America/New_York")` for local
   time (not a fixed UTC offset, so DST stays correct); validate
@@ -160,9 +167,9 @@ defmodule Manhattanhenge do
         workdir: @workdir,
         secret_ids: [secret_id],
         volumes: [%Modal.Volume{id: vol_id, path: @workdir}],
-        # Claude Code (Node) is memory-hungry; the default OOM-kills it
-        # (exit 137) on longer runs. Give it headroom.
-        memory_mb: 4096,
+        # Claude Code (Node) is memory-hungry — especially streaming a
+        # verbose session — and OOM-kills (exit 137) with less. Give it room.
+        memory_mb: 8192,
         timeout_secs: 1_800,
         idle_timeout_secs: 60,
         terminate_on_caller_exit: :silent
@@ -170,6 +177,15 @@ defmodule Manhattanhenge do
 
     {:ok, _task_id} = Modal.Sandbox.get_task_id(sandbox)
     log("  sandbox #{sandbox.id}, Volume mounted read-write at #{@workdir}")
+
+    # Clean room: the Volume persists across runs, so wipe any prior build
+    # before Claude starts — otherwise it finds the last run's app.py and
+    # patches it instead of writing fresh.
+    Modal.Sandbox.exec_streaming!(sandbox, [
+      "bash",
+      "-c",
+      "find #{@workdir} -mindepth 1 -delete 2>/dev/null; true"
+    ])
 
     # SPEC.md goes in /work — Claude (acceptEdits) is sandboxed to its
     # working dir, so a spec under /tmp would be unreadable. It lands on the
@@ -180,17 +196,20 @@ defmodule Manhattanhenge do
       "Read SPEC.md in this directory and implement it exactly: write app.py " <>
         "here (#{@workdir}), matching the serve() entrypoint, routes, and JSON " <>
         "shape precisely. The Python deps (skyfield, fastapi, uvicorn, numpy) " <>
-        "and the DE440 ephemeris are already installed."
+        "and the DE440 ephemeris are already installed. Smoke-test before " <>
+        "finishing: `python3 -c 'from app import serve; serve()'` must run clean."
 
     # PTY: claude needs a terminal (and refuses --dangerously-skip-permissions
-    # as root). `--output-format json` gives us a machine-readable result —
-    # including total_cost_usd. exec_streaming/3 carries the multi-minute run
-    # and raises on a non-zero exit.
+    # as root). `--allowedTools Bash` lets it run python to smoke-test its own
+    # app (acceptEdits alone blocks Bash). `--output-format stream-json
+    # --verbose` emits one JSON event per turn — a transcript we render + save
+    # — plus a final event with total_cost_usd. Raises on a non-zero exit.
     cmd =
       "cd #{@workdir} && claude -p #{shell_escape(prompt)} " <>
-        "--permission-mode acceptEdits --output-format json 2>&1"
+        "--permission-mode acceptEdits --allowedTools Bash --model #{@claude_model} " <>
+        "--output-format stream-json --verbose 2>&1"
 
-    log("  $ claude -p <spec> --permission-mode acceptEdits  (writing app.py, a few min)…")
+    log("  $ claude -p <spec> --model #{@claude_model}  (writing app.py, a few min)…")
     t = now()
 
     result =
@@ -199,7 +218,12 @@ defmodule Manhattanhenge do
         timeout: :infinity
       )
 
-    log("  ✓ Claude finished (#{elapsed(t)})#{claude_cost_suffix(result.stdout)}")
+    transcript = strip_ansi(result.stdout)
+    log("  ✓ Claude finished (#{elapsed(t)})#{render_transcript_and_cost!(transcript)}")
+
+    # Put the session transcript on the Volume too, so the deployed app can
+    # serve it (GET /transcript) right next to its own source.
+    Modal.Filesystem.write_file!(sandbox, "#{@workdir}/transcript.jsonl", transcript)
 
     # Sandbox exit commits the Volume; confirm from the orchestrator (a
     # committed Volume is readable here) and stash a local copy.
@@ -288,6 +312,12 @@ defmodule Manhattanhenge do
     src = to_string(src)
     log("  GET /source → 200  (#{byte_size(src)}B of the app's own source)")
     assert!(String.contains?(src, "serve"), "/source didn't return the app's own source")
+
+    # …and the Claude session that built it, also off the Volume.
+    %{status: 200, body: tx} = req_get!(url <> "/transcript")
+    tx = to_string(tx)
+    log("  GET /transcript → 200  (#{byte_size(tx)}B of the build session)")
+    assert!(String.contains?(tx, "assistant"), "/transcript didn't return the build session")
   end
 
   # The correctness gate: the two published dates, each crossing at ~20:1x
@@ -338,16 +368,59 @@ defmodule Manhattanhenge do
 
   # ── helpers ───────────────────────────────────────────────────────
 
-  # Pull total_cost_usd (+ turns) from claude's --output-format json result.
-  # Best-effort: a non-zero exit already raised, so the run succeeded.
-  defp claude_cost_suffix(stdout) do
-    with [json] <- Regex.run(~r/\{.*\}/s, strip_ansi(stdout)),
-         {:ok, %{"total_cost_usd" => cost} = r} <- JSON.decode(json) do
-      "  —  $#{:erlang.float_to_binary(cost / 1, decimals: 4)}, #{r["num_turns"] || "?"} turns"
-    else
-      _ -> "  (cost: unavailable)"
+  # Render claude's stream-json session as a readable transcript, save the
+  # raw events, and return a " — $cost, N turns" suffix from the result event.
+  defp render_transcript_and_cost!(raw) do
+    File.mkdir_p!(@artifact_dir)
+    File.write!(@transcript_file, raw)
+
+    events =
+      raw
+      |> String.split("\n", trim: true)
+      |> Enum.flat_map(fn line ->
+        case JSON.decode(String.trim(line)) do
+          {:ok, ev} when is_map(ev) -> [ev]
+          _ -> []
+        end
+      end)
+
+    log("  ── Claude session transcript ──────────────")
+    Enum.each(events, &render_event/1)
+    log("  ── (full session-json: #{@transcript_file}) ──")
+
+    case Enum.find(events, &(&1["type"] == "result")) do
+      %{"total_cost_usd" => c} = r ->
+        "  —  $#{:erlang.float_to_binary(c / 1, decimals: 4)}, #{r["num_turns"] || "?"} turns"
+
+      _ ->
+        "  (cost: unavailable)"
     end
   end
+
+  defp render_event(%{"type" => "system", "subtype" => "init"} = ev),
+    do: log(IO.ANSI.format([:faint, "    · session start — model #{ev["model"]}", :reset]))
+
+  defp render_event(%{"type" => "assistant", "message" => %{"content" => content}})
+       when is_list(content) do
+    Enum.each(content, fn
+      %{"type" => "text", "text" => txt} ->
+        if String.trim(txt) != "",
+          do: log(IO.ANSI.format([:faint, "    🤖 ", String.trim(txt), :reset]))
+
+      %{"type" => "tool_use", "name" => name} = tu ->
+        log(IO.ANSI.format([:faint, "    🔧 #{name} #{tool_brief(tu["input"])}", :reset]))
+
+      _ ->
+        :ok
+    end)
+  end
+
+  defp render_event(_), do: :ok
+
+  defp tool_brief(%{"file_path" => p}), do: p
+  defp tool_brief(%{"command" => c}), do: c |> to_string() |> String.slice(0, 70)
+  defp tool_brief(%{"path" => p}), do: p
+  defp tool_brief(_), do: ""
 
   # Python + uv + the calc/web deps + the DE440 ephemeris + the Claude CLI.
   # The deployed function reuses this exact image; app.py comes from the
@@ -418,6 +491,7 @@ defmodule Manhattanhenge do
         curl #{url}/manhattanhenge
         curl #{url}/crossing/2026-05-29
         curl #{url}/source            # the app's own source, off the Volume
+        curl #{url}/transcript        # the Claude session that built it
 
       Scales to zero at rest; re-running redeploys in place.
     """)
