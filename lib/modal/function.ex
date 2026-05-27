@@ -111,6 +111,7 @@ defmodule Modal.Function do
     FunctionPutInputsItem,
     FunctionRetryPolicy,
     Schedule,
+    VolumeMount,
     WebhookConfig
   }
 
@@ -158,6 +159,14 @@ defmodule Modal.Function do
       doc: "Name of the callable inside `:module`. Defaults to `:name`."
     ],
     secret_ids: [type: {:list, :string}, default: []],
+    volumes: [
+      type: {:list, :any},
+      default: [],
+      doc:
+        "Volumes to mount into the function's containers — `%Modal.Volume{}` " <>
+          "structs (with `:path`) or `%{id:, path:, read_only:}` maps. Mirrors " <>
+          "`Modal.Sandbox.create/2`'s `:volumes`."
+    ],
     timeout_secs: [
       type: :pos_integer,
       default: 300,
@@ -361,6 +370,7 @@ defmodule Modal.Function do
     module: @common_deploy_opts[:module],
     callable: @common_deploy_opts[:callable],
     secret_ids: @common_deploy_opts[:secret_ids],
+    volumes: @common_deploy_opts[:volumes],
     timeout_secs: @common_deploy_opts[:timeout_secs],
     idle_timeout_secs: @common_deploy_opts[:idle_timeout_secs],
     schedule: @common_deploy_opts[:schedule],
@@ -755,9 +765,11 @@ defmodule Modal.Function do
       Modal.Function.stream(call)
       |> Enum.each(&IO.write/1)
 
-  Remote exceptions inside the generator surface mid-stream as a
-  raised `%Modal.Error{kind: :function_failed}` — wrap in a `try` if
-  you want to handle them inline.
+  Remote failures — an exception raised inside the generator, or the
+  function failing to start at all (e.g. an import error in its module)
+  — surface as a raised `%Modal.Error{kind: :function_failed}` carrying
+  the worker traceback, not as a silently-empty result. Wrap the
+  consumption in `try` to handle them inline.
 
   ## Options
 
@@ -781,15 +793,30 @@ defmodule Modal.Function do
       last_index: 0
     }
 
-    {:ok, chunks} =
+    {:ok, {chunks, done?}} =
       RPC.stream_reduce(
         call.client,
         :FunctionCallGetDataOut,
         request,
-        [],
+        {[], false},
         &stream_reducer/2,
         timeout
       )
+
+    # The data-out stream carries only the yielded values; the call's terminal
+    # success/failure is delivered separately via FunctionGetOutputs (CPython's
+    # `run_generator` at `_functions.py:333` merges the data stream with a
+    # `poll_function` call that raises on failure). Without consulting that, a
+    # generator that fails to import or raises — yielding nothing — surfaces as
+    # a silent, partial/empty list.
+    #
+    # A clean run *may* end with a recognizable GENERATOR_DONE terminator
+    # chunk, but live the stream often just EOFs after the data chunks, so
+    # `done?` is unreliable as a success signal. We treat it only as a
+    # definite-success fast path (skip the poll); otherwise poll the terminal
+    # result and raise *only* if it reports failure (see
+    # `raise_on_generator_failure!` — it checks status, never decodes).
+    unless done?, do: raise_on_generator_failure!(call)
 
     Enum.reverse(chunks)
   end
@@ -820,15 +847,16 @@ defmodule Modal.Function do
     end
   end
 
-  # Reducer called once per DataChunk on the streaming RPC. Returns
-  # `{:cont, [val | acc]}` to keep collecting or `{:halt, acc}` when
-  # we see the GENERATOR_DONE terminator.
-  defp stream_reducer(%{data_format: :DATA_FORMAT_GENERATOR_DONE}, acc) do
-    {:halt, acc}
+  # Reducer called once per DataChunk on the streaming RPC. The accumulator is
+  # `{values, done?}` — `done?` records whether we saw the GENERATOR_DONE
+  # terminator, which `stream/2` uses to tell a clean finish from a stream that
+  # closed because the generator failed.
+  defp stream_reducer(%{data_format: :DATA_FORMAT_GENERATOR_DONE}, {acc, _done}) do
+    {:halt, {acc, true}}
   end
 
-  defp stream_reducer(%{data_oneof: {:data, bytes}}, acc) do
-    {:cont, [Modal.Pickle.decode!(bytes) | acc]}
+  defp stream_reducer(%{data_oneof: {:data, bytes}}, {acc, done}) do
+    {:cont, {[Modal.Pickle.decode!(bytes) | acc], done}}
   end
 
   defp stream_reducer(%{data_oneof: {:data_blob_id, blob_id}}, _acc) do
@@ -845,6 +873,38 @@ defmodule Modal.Function do
   end
 
   defp stream_reducer(_chunk, acc), do: {:cont, acc}
+
+  # A generator's yielded values come over the data-out stream, but its
+  # terminal pass/fail is delivered via FunctionGetOutputs — same as a plain
+  # call. Called only when the data-out stream ended *without* a
+  # GENERATOR_DONE terminator (the generator didn't finish cleanly): poll the
+  # terminal result and re-raise the function's failure (with traceback)
+  # rather than letting `stream/2` hand back a partial/empty list silently.
+  # `clear_on_success: false` mirrors CPython's `poll_function` for
+  # generators — a non-destructive read of the result.
+  defp raise_on_generator_failure!(call) do
+    request = %FunctionGetOutputsRequest{
+      function_call_id: call.id,
+      max_values: 1,
+      timeout: 5.0,
+      requested_at: :os.system_time(:second) * 1.0,
+      last_entry_id: "0-0",
+      clear_on_success: false
+    }
+
+    case RPC.call_no_retry(call.client, :FunctionGetOutputs, request, 10_000) do
+      {:ok, %{outputs: [%{result: %{status: :GENERIC_STATUS_FAILURE} = result} | _]}} ->
+        raise Modal.Error.function_failed(result.exception || "(no message)", result.traceback)
+
+      _ ->
+        # Success / terminated / no result yet / transport blip. We inspect
+        # only the terminal *status* — a successful generator's result carries
+        # a `GeneratorDone` protobuf, not a pickled value, so decoding it (as
+        # `handle_output` does) would raise on non-pickle bytes. We only need
+        # to distinguish an explicit failure from everything else.
+        :ok
+    end
+  end
 
   defp poll_await(call, deadline), do: poll_await(call, deadline, nil)
 
@@ -1072,6 +1132,27 @@ defmodule Modal.Function do
     |> maybe_put(:retry_policy, build_retry_policy(opts[:retries]))
     |> maybe_put(:resources, build_resources(opts))
     |> maybe_put(:i6pn_enabled, opts[:i6pn] || nil)
+    |> maybe_put(:volume_mounts, build_volume_mounts(opts[:volumes]))
+  end
+
+  # Mirror of `Modal.Sandbox`'s volume-mount builder: accept `%Modal.Volume{}`
+  # structs (preferred) or `{id, path}`-bearing maps. Empty -> nil so
+  # `maybe_put/3` leaves `volume_mounts` unset.
+  defp build_volume_mounts(volumes) when volumes in [nil, []], do: nil
+
+  defp build_volume_mounts(volumes) when is_list(volumes),
+    do: Enum.map(volumes, &build_volume_mount/1)
+
+  defp build_volume_mount(%Modal.Volume{} = v) do
+    %VolumeMount{volume_id: v.id, mount_path: v.path, read_only: v.read_only}
+  end
+
+  defp build_volume_mount(v) when is_map(v) do
+    %VolumeMount{
+      volume_id: Map.get(v, :id) || Map.get(v, "id"),
+      mount_path: Map.get(v, :path) || Map.get(v, "path"),
+      read_only: Map.get(v, :read_only, false)
+    }
   end
 
   defp build_resources(opts) do

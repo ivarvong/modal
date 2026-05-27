@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `:volumes` option on `Modal.Function.deploy_asgi/2`, `deploy_web_server/2`,
+  `deploy_function/2`, and `deploy_many/2` — mount `Modal.Volume`s into a
+  deployed function's containers, same shape as `Modal.Sandbox.create/2`'s
+  `:volumes` (`%Modal.Volume{}` structs or `%{id:, path:, read_only:}` maps).
+  Lets a deployed app serve code/data straight from a Volume.
 - `Modal.App.list/2` and `Modal.App.stop/2` (+ `stop!/2`) — list apps in an
   environment (`{:ok, [map]}` with `:app_id`, `:description`, `:state`,
   `:created_at`, `:stopped_at`, `:n_running_tasks`) and stop a deployed app
@@ -20,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Modal.Sandbox` volume mounts now set `allow_background_commits: true`, so
+  writes to a mounted `Modal.Volume` actually persist (the worker commits
+  periodically and on exit). Previously writes were lost unless committed
+  from inside the container — which a sandbox can't do, since it has no
+  Modal client credentials. Matches the Python SDK's sandbox volume mounts.
 - `Modal.ContainerProcess.await/2` (and `Modal.Sandbox.exec_streaming/3`)
   no longer fail on execs that run longer than the per-attempt wait
   deadline (~60s). `TaskExecWait` blocks until the exec exits, so a long
@@ -38,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently dropping the value and returning a gappy result. Blob-fetch
   is tracked on the roadmap; until then the failure is explicit and
   consistent with `await/2`.
+- Generator streams now surface a *failed* generator (one that raises, or
+  whose module fails to import on the worker) as a raised
+  `%Modal.Error{kind: :function_failed}` with the worker traceback, instead
+  of returning a silent empty/partial list. `stream/2` now polls the
+  terminal `FunctionGetOutputs` result when the data-out stream ends without
+  a `GENERATOR_DONE` terminator (matching CPython's `run_generator`).
 - `Modal.Function.await/2` now distinguishes a call whose output has expired
   (or whose input was lost to worker preemption with no retry) from a
   genuine timeout: when the server reports no result **and** no unfinished

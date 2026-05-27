@@ -1101,7 +1101,11 @@ defmodule Modal.Sandbox do
     %Modal.Client.VolumeMount{
       volume_id: v.id,
       mount_path: v.path,
-      read_only: v.read_only
+      read_only: v.read_only,
+      # Worker commits writes periodically + on exit, so a sandbox's volume
+      # writes persist without an in-container `commit()` (which can't auth
+      # anyway). Matches the Python SDK's sandbox volume mounts.
+      allow_background_commits: true
     }
   end
 
@@ -1109,7 +1113,8 @@ defmodule Modal.Sandbox do
     %Modal.Client.VolumeMount{
       volume_id: Map.get(v, :id) || Map.get(v, "id"),
       mount_path: Map.get(v, :path) || Map.get(v, "path"),
-      read_only: Map.get(v, :read_only, false)
+      read_only: Map.get(v, :read_only, false),
+      allow_background_commits: true
     }
   end
 
