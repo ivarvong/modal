@@ -21,12 +21,7 @@ defmodule Modal.ImageTest do
   # production code's halt-on-failure path is exercised.
   defp stub_stream_with(responses) do
     Modal.Client.Mock
-    |> expect(:stream_rpc_reduce, fn @client,
-                                     :image_join_streaming,
-                                     _req,
-                                     initial,
-                                     reducer,
-                                     _timeout ->
+    |> expect(:stream_rpc_reduce, fn @client, :image_join_streaming, _req, initial, reducer, _timeout ->
       {:ok, Enum.reduce_while(responses, initial, reducer)}
     end)
   end

@@ -104,9 +104,7 @@ defmodule Modal.Contract.NetworkAccessTest do
     image_id: image_id
   } do
     {exit_code, _http_code} =
-      curl_in_sandbox(client, app, image_id, "https://api.github.com/zen",
-        network_access: :blocked
-      )
+      curl_in_sandbox(client, app, image_id, "https://api.github.com/zen", network_access: :blocked)
 
     refute exit_code == 0,
            "curl should fail under :blocked egress; got exit_code=#{exit_code}"
@@ -124,17 +122,13 @@ defmodule Modal.Contract.NetworkAccessTest do
     assert Enum.all?(gh, &String.contains?(&1, "/"))
 
     {gh_exit, gh_code} =
-      curl_in_sandbox(client, app, image_id, "https://api.github.com/zen",
-        network_access: {:allowlist, gh}
-      )
+      curl_in_sandbox(client, app, image_id, "https://api.github.com/zen", network_access: {:allowlist, gh})
 
     assert gh_exit == 0, "GitHub should be allowed (in CIDR list); got exit=#{gh_exit}"
     assert gh_code == "200"
 
     {anth_exit, _} =
-      curl_in_sandbox(client, app, image_id, "https://api.anthropic.com/v1/messages",
-        network_access: {:allowlist, gh}
-      )
+      curl_in_sandbox(client, app, image_id, "https://api.anthropic.com/v1/messages", network_access: {:allowlist, gh})
 
     refute anth_exit == 0,
            "Anthropic should be blocked (not in GH CIDR list); got exit=#{anth_exit}"

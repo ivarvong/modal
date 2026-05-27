@@ -38,8 +38,7 @@ defmodule Modal.DictTest do
         assert req.dict_id == "di-test"
         assert req.key == "job_42"
 
-        {:ok,
-         %Modal.Client.DictGetResponse{found: true, value: ~s({"status":"done","value":100})}}
+        {:ok, %Modal.Client.DictGetResponse{found: true, value: ~s({"status":"done","value":100})}}
       end)
 
       assert {:ok, %{"status" => "done", "value" => 100}} =

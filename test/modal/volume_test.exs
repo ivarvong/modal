@@ -169,8 +169,7 @@ defmodule Modal.VolumeTest do
       |> expect(:rpc, fn @client, :volume_list, req, _timeout ->
         assert req.pagination.max_objects == 2
 
-        {:ok,
-         %Modal.Client.VolumeListResponse{items: [item("vo-2", "b", 2.0), item("vo-1", "a", 1.0)]}}
+        {:ok, %Modal.Client.VolumeListResponse{items: [item("vo-2", "b", 2.0), item("vo-1", "a", 1.0)]}}
       end)
 
       assert {:ok, [%{volume_id: "vo-2"}, %{volume_id: "vo-1"}]} =

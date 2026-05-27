@@ -66,32 +66,14 @@ defmodule Modal.Contract.FunctionTest do
 
     {:ok, [square, add, boom, echo, count_to, boom_gen]} =
       Modal.Function.deploy_many(client, [
+        {:function, app: app, name: "contract-square", image_id: image_id, module: "entry", callable: "square"},
+        {:function, app: app, name: "contract-add", image_id: image_id, module: "entry", callable: "add"},
+        {:function, app: app, name: "contract-boom", image_id: image_id, module: "entry", callable: "boom"},
+        {:function, app: app, name: "contract-echo", image_id: image_id, module: "entry", callable: "echo"},
         {:function,
-         app: app,
-         name: "contract-square",
-         image_id: image_id,
-         module: "entry",
-         callable: "square"},
+         app: app, name: "contract-count-to", image_id: image_id, module: "entry", callable: "count_to", generator: true},
         {:function,
-         app: app, name: "contract-add", image_id: image_id, module: "entry", callable: "add"},
-        {:function,
-         app: app, name: "contract-boom", image_id: image_id, module: "entry", callable: "boom"},
-        {:function,
-         app: app, name: "contract-echo", image_id: image_id, module: "entry", callable: "echo"},
-        {:function,
-         app: app,
-         name: "contract-count-to",
-         image_id: image_id,
-         module: "entry",
-         callable: "count_to",
-         generator: true},
-        {:function,
-         app: app,
-         name: "contract-boom-gen",
-         image_id: image_id,
-         module: "entry",
-         callable: "boom_gen",
-         generator: true}
+         app: app, name: "contract-boom-gen", image_id: image_id, module: "entry", callable: "boom_gen", generator: true}
       ])
 
     %{

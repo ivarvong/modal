@@ -15,8 +15,6 @@ defmodule Modal.CronTest do
     assert {:ok, _} = Modal.Function.validate_schedule(Modal.Cron.utc("* * * * *"))
 
     assert {:ok, _} =
-             Modal.Function.validate_schedule(
-               Modal.Cron.in_timezone("0 9 * * *", "America/New_York")
-             )
+             Modal.Function.validate_schedule(Modal.Cron.in_timezone("0 9 * * *", "America/New_York"))
   end
 end

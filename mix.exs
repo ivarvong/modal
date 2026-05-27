@@ -75,8 +75,7 @@ defmodule Modal.MixProject do
         "GitHub" => @source_url,
         "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
       },
-      files:
-        ~w(lib guides mix.exs README.md CONTRIBUTING.md LICENSE NOTICE CHANGELOG.md .formatter.exs)
+      files: ~w(lib guides mix.exs README.md CONTRIBUTING.md LICENSE NOTICE CHANGELOG.md .formatter.exs)
     ]
   end
 

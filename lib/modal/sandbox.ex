@@ -751,9 +751,7 @@ defmodule Modal.Sandbox do
       :ok
     else
       {:error,
-       Modal.Error.validation_msg(
-         "Modal.Sandbox.run/2 requires :cmd as a list of strings, got #{inspect(cmd)}"
-       )}
+       Modal.Error.validation_msg("Modal.Sandbox.run/2 requires :cmd as a list of strings, got #{inspect(cmd)}")}
     end
   end
 
@@ -1108,8 +1106,7 @@ defmodule Modal.Sandbox do
         nil
 
       ports ->
-        {:open_ports,
-         %Modal.Client.PortSpecs{ports: Enum.map(ports, &%Modal.Client.PortSpec{port: &1})}}
+        {:open_ports, %Modal.Client.PortSpecs{ports: Enum.map(ports, &%Modal.Client.PortSpec{port: &1})}}
     end
   end
 
@@ -1176,9 +1173,7 @@ defmodule Modal.Sandbox do
   def validate_network_access(:blocked), do: {:ok, :blocked}
 
   def validate_network_access({:allowlist, []}),
-    do:
-      {:error,
-       "network_access {:allowlist, []}: empty allowlist denies all egress; use :blocked instead"}
+    do: {:error, "network_access {:allowlist, []}: empty allowlist denies all egress; use :blocked instead"}
 
   def validate_network_access({:allowlist, [_ | _] = cidrs}) do
     if Enum.all?(cidrs, &is_binary/1) do
@@ -1189,8 +1184,7 @@ defmodule Modal.Sandbox do
   end
 
   def validate_network_access(other),
-    do:
-      {:error, "expected :open | :blocked | {:allowlist, [\"cidr\", ...]}, got #{inspect(other)}"}
+    do: {:error, "expected :open | :blocked | {:allowlist, [\"cidr\", ...]}, got #{inspect(other)}"}
 
   @doc """
   Fetch GitHub's current API IP allowlist as a list of CIDR strings,

@@ -272,9 +272,7 @@ defmodule Modal.Volume do
     cond do
       remote_path == "" or String.ends_with?(remote_path, "/") ->
         {:error,
-         Modal.Error.validation_msg(
-           "remote_path must refer to a file, not a directory (got #{inspect(remote_path)})"
-         )}
+         Modal.Error.validation_msg("remote_path must refer to a file, not a directory (got #{inspect(remote_path)})")}
 
       byte_size(content) > @block_size ->
         {:error,
@@ -356,10 +354,7 @@ defmodule Modal.Volume do
   defp handle_probe_response(many, _client, _base_request, _content, _timeout) do
     # We sent one block; server reported more than one missing.
     # Defensive — shouldn't happen for a single-block file.
-    {:error,
-     Modal.Error.unexpected(
-       "expected ≤1 missing block for a single-block file, got #{length(many)}"
-     )}
+    {:error, Modal.Error.unexpected("expected ≤1 missing block for a single-block file, got #{length(many)}")}
   end
 
   # HTTP PUT via Req. Block-store URLs are presigned S3-style; the
@@ -383,8 +378,7 @@ defmodule Modal.Volume do
         {:ok, body}
 
       {:ok, %Req.Response{status: status, body: body}} ->
-        {:error,
-         Modal.Error.network({:blob_upload, status, body |> to_string() |> String.slice(0, 512)})}
+        {:error, Modal.Error.network({:blob_upload, status, body |> to_string() |> String.slice(0, 512)})}
 
       {:error, reason} ->
         {:error, Modal.Error.network({:blob_upload, reason})}
