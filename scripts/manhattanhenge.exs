@@ -63,28 +63,31 @@ defmodule Manhattanhenge do
     {:ok, app} = Modal.App.lookup(client, @app_name)
     run_id = run_id()
 
-    image = base_image!(client, app)
+    image = step(:image, fn -> base_image!(client, app) end)
+
     # A fresh, uniquely-named volume per run is empty by construction, so Claude
     # builds from scratch (no stale app.py to patch).
-    vol = Modal.Volume.get_or_create!(client, "#{@volume_prefix}-#{run_id}")
+    vol = step(:volume, fn -> Modal.Volume.get_or_create!(client, "#{@volume_prefix}-#{run_id}") end)
 
     # Ephemeral means Modal ties the secret to this client session instead of
     # leaving named per-run secrets behind. Agent demos should not accumulate
     # credentials as historical artifacts.
     secret =
-      Modal.Secret.create!(client,
-        app: app,
-        name: "henge-key-#{run_id}",
-        env: %{"ANTHROPIC_API_KEY" => key},
-        if_exists: :ephemeral
-      )
+      step(:secret, fn ->
+        Modal.Secret.create!(client,
+          app: app,
+          name: "henge-key-#{run_id}",
+          env: %{"ANTHROPIC_API_KEY" => key},
+          if_exists: :ephemeral
+        )
+      end)
 
     try do
-      build!(client, app, image, vol, secret)
-      web = deploy!(client, app, image, vol)
-      verify!(web)
+      step(:build, fn -> build!(client, app, image, vol, secret) end)
+      web = step(:deploy, fn -> deploy!(client, app, image, vol) end)
+      step(:verify, fn -> verify!(web) end)
       # The deploy is live on `vol`; retire prior runs' volumes (theirs are replaced).
-      prune_stale_volumes!(client, vol)
+      step(:prune, fn -> prune_stale_volumes!(client, vol) end)
       summary(web)
     after
       Modal.Secret.delete(client, secret)
@@ -151,6 +154,7 @@ defmodule Manhattanhenge do
 
       File.write!(@transcript_file, result.stdout)
       assert!(result.code == 0, "claude build failed (exit #{inspect(result.code)}) — see #{@transcript_file}")
+      Process.put(:build_cost, build_cost_and_turns(result.stdout))
       log("  ✓ Claude finished (#{elapsed(t)})#{cost_summary(result.stdout)}")
 
       # The orchestrator, not the agent, owns the acceptance gate. This catches
@@ -302,18 +306,22 @@ defmodule Manhattanhenge do
 
   # The stream's final `result` event carries the run cost + turn count.
   defp cost_summary(transcript) do
+    case build_cost_and_turns(transcript) do
+      {c, turns} -> "  —  $#{usd(c)}, #{turns || "?"} turns"
+      nil -> ""
+    end
+  end
+
+  defp build_cost_and_turns(transcript) do
     transcript
     |> String.split("\n", trim: true)
     |> Enum.reverse()
     |> Enum.find_value(fn line ->
       case JSON.decode(line) do
-        {:ok, %{"type" => "result", "total_cost_usd" => c} = r} ->
-          "  —  $#{:erlang.float_to_binary(c / 1, decimals: 4)}, #{r["num_turns"] || "?"} turns"
-
-        _ ->
-          nil
+        {:ok, %{"type" => "result", "total_cost_usd" => c} = r} -> {c, r["num_turns"]}
+        _ -> nil
       end
-    end) || ""
+    end)
   end
 
   defp summary(%Modal.Function{web_url: url}) do
@@ -326,7 +334,25 @@ defmodule Manhattanhenge do
         curl #{url}/source       # the app's own source, off the Volume
       local transcript: #{@transcript_file} (not deployed)
     """)
+
+    log("  per element (wall time):")
+    for {label, ms} <- timings(), do: log("    #{String.pad_trailing(to_string(label), 7)} #{elapsed_ms(ms)}")
+
+    case Process.get(:build_cost) do
+      {c, turns} -> log("  cost: $#{usd(c)} (Claude API, #{turns} turns); Modal compute billed by the second")
+      _ -> :ok
+    end
   end
+
+  # Wrap each stage so the run ends with a per-element wall-time breakdown.
+  defp step(label, fun) do
+    t = now()
+    out = fun.()
+    Process.put(:timings, [{label, now() - t} | Process.get(:timings, [])])
+    out
+  end
+
+  defp timings, do: Process.get(:timings, []) |> Enum.reverse()
 
   # 90s receive timeout: a cold start (min_containers: 0) has to boot Python,
   # import Skyfield, load the ephemeris, and serve — Modal holds the request
@@ -344,10 +370,12 @@ defmodule Manhattanhenge do
   defp assert!(false, m), do: raise("ASSERT FAILED — #{m}")
   defp fmt(n) when is_number(n), do: :erlang.float_to_binary(n / 1, decimals: 3)
   defp fmt(n), do: inspect(n)
+  defp usd(c), do: :erlang.float_to_binary(c / 1, decimals: 4)
   defp log_header(m), do: IO.puts(:stderr, "\n\e[1m── #{m} ──\e[0m")
   defp log(m), do: IO.puts(:stderr, m)
   defp now, do: System.monotonic_time(:millisecond)
-  defp elapsed(t), do: "#{Float.round((now() - t) / 1000, 1)}s"
+  defp elapsed(t), do: elapsed_ms(now() - t)
+  defp elapsed_ms(ms), do: "#{Float.round(ms / 1000, 1)}s"
 end
 
 Manhattanhenge.run()
