@@ -111,6 +111,97 @@ defmodule Modal.VolumeTest do
     end
   end
 
+  describe "list/2" do
+    defp item(id, name, created_at) do
+      %Modal.Client.VolumeListItem{
+        volume_id: id,
+        label: name,
+        metadata: %Modal.Client.VolumeMetadata{
+          name: name,
+          creation_info: %Modal.Client.CreationInfo{created_at: created_at}
+        }
+      }
+    end
+
+    test "returns one map per volume with volume_id/name/created_at; defaults env + cursor" do
+      Modal.Client.Mock
+      |> expect(:rpc, fn @client, :volume_list, req, _timeout ->
+        assert req.environment_name == ""
+        # Default cursor is ~now (Unix seconds); pages newest-first.
+        assert_in_delta req.pagination.created_before, System.os_time(:second), 5
+
+        {:ok,
+         %Modal.Client.VolumeListResponse{
+           items: [item("vo-2", "beta", 200.0), item("vo-1", "alpha", 100.0)]
+         }}
+      end)
+
+      assert {:ok, vols} = Modal.Volume.list(@client)
+
+      assert vols == [
+               %{volume_id: "vo-2", name: "beta", created_at: 200.0},
+               %{volume_id: "vo-1", name: "alpha", created_at: 100.0}
+             ]
+    end
+
+    test "walks every page, resuming the cursor from the oldest item seen" do
+      full_page = for n <- 100..1//-1, do: item("vo-#{n}", "v#{n}", n * 1.0)
+
+      Modal.Client.Mock
+      # First page: a full 100, so list/2 must fetch again.
+      |> expect(:rpc, fn @client, :volume_list, _req, _timeout ->
+        {:ok, %Modal.Client.VolumeListResponse{items: full_page}}
+      end)
+      # Second page: cursor resumes from the previous page's oldest created_at,
+      # and a short page ends the walk.
+      |> expect(:rpc, fn @client, :volume_list, req, _timeout ->
+        assert req.pagination.created_before == 1.0
+        {:ok, %Modal.Client.VolumeListResponse{items: [item("vo-0", "v0", 0.5)]}}
+      end)
+
+      assert {:ok, vols} = Modal.Volume.list(@client)
+      assert length(vols) == 101
+      assert List.last(vols) == %{volume_id: "vo-0", name: "v0", created_at: 0.5}
+    end
+
+    test ":max_objects caps the result and the page size" do
+      Modal.Client.Mock
+      |> expect(:rpc, fn @client, :volume_list, req, _timeout ->
+        assert req.pagination.max_objects == 2
+
+        {:ok,
+         %Modal.Client.VolumeListResponse{items: [item("vo-2", "b", 2.0), item("vo-1", "a", 1.0)]}}
+      end)
+
+      assert {:ok, [%{volume_id: "vo-2"}, %{volume_id: "vo-1"}]} =
+               Modal.Volume.list(@client, max_objects: 2)
+    end
+
+    test ":environment_name flows through" do
+      Modal.Client.Mock
+      |> expect(:rpc, fn @client, :volume_list, req, _timeout ->
+        assert req.environment_name == "staging"
+        {:ok, %Modal.Client.VolumeListResponse{items: []}}
+      end)
+
+      assert {:ok, []} = Modal.Volume.list(@client, environment_name: "staging")
+    end
+
+    test "rejects a negative :max_objects without an RPC" do
+      assert {:error, %Modal.Error{kind: :validation}} =
+               Modal.Volume.list(@client, max_objects: -1)
+    end
+
+    test "propagates RPC errors" do
+      Modal.Client.Mock
+      |> expect(:rpc, fn @client, :volume_list, _req, _timeout ->
+        {:error, Modal.Error.grpc(13, "internal")}
+      end)
+
+      assert {:error, %Modal.Error{kind: :grpc, code: 13}} = Modal.Volume.list(@client)
+    end
+  end
+
   # ── put_file/5 ──────────────────────────────────────────────────
   #
   # Full put_file/5 coverage needs an HTTPS server stand-in for the

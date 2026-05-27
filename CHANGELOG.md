@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:created_at`, `:stopped_at`, `:n_running_tasks`) and stop a deployed app
   by `%Modal.App{}` or id. Adds `:AppList` / `:AppStop` to `Modal.RPC`
   `@methods`.
+- `Modal.Volume.list/2` — list named volumes in an environment
+  (`{:ok, [map]}` with `:volume_id`, `:name`, `:created_at`), newest first.
+  Server pagination is walked internally; cap with `:max_objects` or bound
+  with `:created_before`. Adds `:VolumeList` to `Modal.RPC` `@methods`.
+  Pairs with `delete/2` to prune volumes by name prefix.
 - `Modal.Error` kind `:output_expired` — a function call's output is gone
   (expired / already consumed / input lost), distinct from `:timeout` (the
   call is still running).

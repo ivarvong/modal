@@ -125,6 +125,85 @@ defmodule Modal.Volume do
     with {:ok, _} <- RPC.call(client, :VolumeDelete, request), do: :ok
   end
 
+  # VolumeList is server-paginated (≤100 per page, newest-first); we walk
+  # every page so the caller sees one flat list. Each page filters to
+  # volumes created strictly before a cursor, so the first page starts at
+  # "now" and each subsequent page resumes from the oldest item we've seen.
+  @list_page_size 100
+
+  @doc """
+  List named volumes in an environment, newest first. Returns
+  `{:ok, [map]}`, one map per volume with `:volume_id`, `:name`, and
+  `:created_at` (a Unix timestamp, float seconds).
+
+      {:ok, vols} = Modal.Volume.list(client)
+      stale = Enum.filter(vols, &String.starts_with?(&1.name, "scratch-"))
+      Enum.each(stale, &Modal.Volume.delete(client, &1.volume_id))
+
+  Pagination is handled internally — the result is the full list unless
+  capped with `:max_objects`.
+
+  ## Options
+
+    * `:environment_name` — non-default environment (default `""`).
+    * `:max_objects` — cap the number returned (default: all). Must be
+      non-negative.
+    * `:created_before` — only volumes created before this Unix timestamp
+      (float seconds). Defaults to the current time.
+  """
+  @spec list(GenServer.server(), keyword()) :: {:ok, [map()]} | {:error, Modal.Error.t()}
+  def list(client, opts \\ []) do
+    env = Keyword.get(opts, :environment_name, "")
+    max = Keyword.get(opts, :max_objects)
+    before = Keyword.get(opts, :created_before, System.os_time(:millisecond) / 1000.0)
+
+    if is_integer(max) and max < 0 do
+      {:error, Modal.Error.validation_msg(":max_objects cannot be negative, got #{max}")}
+    else
+      list_pages(client, env, max, before, [])
+    end
+  end
+
+  defp list_pages(client, env, max, before, acc) do
+    page_size =
+      if is_integer(max), do: min(@list_page_size, max - length(acc)), else: @list_page_size
+
+    request = %Modal.Client.VolumeListRequest{
+      environment_name: env,
+      pagination: %Modal.Client.ListPagination{max_objects: page_size, created_before: before}
+    }
+
+    with {:ok, resp} <- RPC.call(client, :VolumeList, request) do
+      acc = acc ++ Enum.map(resp.items, &volume_list_item_to_map/1)
+      done? = length(resp.items) < page_size or (is_integer(max) and length(acc) >= max)
+
+      cond do
+        done? and is_integer(max) ->
+          {:ok, Enum.take(acc, max)}
+
+        done? ->
+          {:ok, acc}
+
+        true ->
+          list_pages(
+            client,
+            env,
+            max,
+            List.last(resp.items).metadata.creation_info.created_at,
+            acc
+          )
+      end
+    end
+  end
+
+  defp volume_list_item_to_map(item) do
+    %{
+      volume_id: item.volume_id,
+      name: item.metadata.name,
+      created_at: item.metadata.creation_info.created_at
+    }
+  end
+
   # ── put_file/4 — orchestrator-side blob upload ──────────────────
 
   # Modal's content-addressed block size for VolumePutFiles2. The

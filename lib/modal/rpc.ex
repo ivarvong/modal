@@ -122,6 +122,7 @@ defmodule Modal.RPC do
     VolumeDelete: :volume_delete,
     VolumeGetFile2: :volume_get_file2,
     VolumeGetOrCreate: :volume_get_or_create,
+    VolumeList: :volume_list,
     VolumeListFiles2: :volume_list_files2,
     VolumePutFiles2: :volume_put_files2,
     VolumeReload: :volume_reload
