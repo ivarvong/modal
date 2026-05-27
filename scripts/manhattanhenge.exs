@@ -43,46 +43,33 @@ defmodule Manhattanhenge do
   # serve() entrypoint) so extraction and deploy stay deterministic; the
   # astronomy is Claude's, and STAGE 3 verifies it.
   @spec_md """
-  # Manhattanhenge 2026 — build two files in #{@workdir}
+  # Manhattanhenge 2026 — write two files in #{@workdir}
 
-  Manhattanhenge is the evening the setting Sun aligns with the Manhattan
-  street grid: **azimuth 299.1°** (true north, clockwise). Compute it with
-  **Skyfield + JPL DE440**, pre-installed at `/opt/ephem/de440s.bsp`:
+  Manhattanhenge is the evening the setting Sun aligns with Manhattan's
+  street grid: azimuth 299.1° (true north, clockwise). Compute it with
+  Skyfield + JPL DE440 (pre-installed at `/opt/ephem/de440s.bsp` — load via
+  `Loader('/opt/ephem')`), for an observer on the Manhattan grid
+  (~40.75°N, 74.00°W).
 
-      from skyfield.api import Loader
-      eph = Loader('/opt/ephem')('de440s.bsp')
+  For a date, find the afternoon instant the Sun's azimuth crosses 299.1°,
+  and report two altitudes there:
+    * `apparent_altitude_deg` — refraction-corrected, the observable
+      (`.altaz(temperature_C=10, pressure_mbar=1010)`)
+    * `geometric_altitude_deg` — no refraction (plain `.altaz()`), for contrast
 
-  Observer: Manhattan grid — lat 40.7527, lon -73.9772, elev 10 m.
+  The 2026 Manhattanhenge dates are May 28 & 29 (treat as known).
 
-  For an America/New_York date, find the instant the Sun's azimuth crosses
-  299.1° on its afternoon descent toward sunset. Report the **apparent
-  (refraction-corrected) altitude** there — near the horizon refraction
-  (~0.5°) exceeds the Sun's radius (0.27°), so apparent, not geometric, is
-  the observable; use `.altaz(temperature_C=10, pressure_mbar=1010)`. Also
-  report the geometric altitude (plain `.altaz()`) for contrast. Use the
-  true sea-level horizon — do NOT correct for the New Jersey Palisades. The
-  2026 dates are the published **May 28 & 29** (treat as a known constant).
+  ## #{@workdir}/henge.py — functions for app.py to import
+    * `crossing(d: datetime.date) -> dict` with keys `date`, `crossing_utc`
+      (ISO `…Z`), `crossing_edt` (ISO with offset), `apparent_altitude_deg`,
+      `geometric_altitude_deg` (altitudes rounded to 2 dp)
+    * `manhattanhenge(year, month) -> [date strings]`; (2026, 5) -> the two dates
 
-  ## #{@workdir}/henge.py
-
-  A module exposing two functions for app.py to import:
-    * `crossing(d: datetime.date) -> dict` with keys `date`,
-      `crossing_utc` (ISO, `…Z`), `crossing_edt` (ISO, with offset),
-      `apparent_altitude_deg`, `geometric_altitude_deg` — altitudes
-      rounded to 2 dp. (For 2026-05-28: crossing_edt
-      `2026-05-28T20:13:15-04:00`, apparent 0.44, geometric -0.05.)
-    * `manhattanhenge(year, month) -> [date strings]`; May 2026 returns
-      `["2026-05-28", "2026-05-29"]`.
-
-  ## #{@workdir}/app.py
-
-  A FastAPI app with a module-level `serve()` that builds and returns it
-  (no `@modal.asgi_app`, no uvicorn — a host imports `serve()`). Load the
-  ephemeris once at import. Routes:
-    * `GET /` -> `{"service","azimuth_deg":299.1,"ephemeris","endpoints"}`
-    * `GET /manhattanhenge` -> `{"year":2026,"dates":[…],"crossings":[…]}`
-      for the two dates
-    * `GET /crossing/{date}` -> one `<crossing>`; HTTP 422 on a bad date
+  ## #{@workdir}/app.py — module-level `serve()` returns a FastAPI app
+  (no `@modal` decorator, no uvicorn; load the ephemeris once at import)
+    * `GET /`               -> `{"service","azimuth_deg":299.1,"ephemeris","endpoints"}`
+    * `GET /manhattanhenge`  -> `{"year":2026,"dates":[…],"crossings":[…]}`
+    * `GET /crossing/{date}` -> one crossing dict; 422 on a bad date
   """
 
   def run do
