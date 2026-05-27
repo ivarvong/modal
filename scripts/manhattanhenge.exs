@@ -316,6 +316,7 @@ defmodule Manhattanhenge do
         curl #{url}/manhattanhenge
         curl #{url}/crossing/2026-05-29
         curl #{url}/source       # the app's own source, off the Volume
+      local transcript: #{@transcript_file} (not deployed)
     """)
   end
 
